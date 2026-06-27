@@ -295,6 +295,7 @@ def _drain_kb() -> bool:
 def run_assist(
     stop_event=None,
     force_event=None,
+    pause_event=None,
     on_answer=None,
     on_status=None,
 ) -> None:
@@ -305,18 +306,22 @@ def run_assist(
     GUI mode: uses threading Events and callbacks instead.
 
     Args:
-        stop_event:  threading.Event — set it to stop the loop.
-        force_event: threading.Event — set it to force an immediate re-check.
+        stop_event:  threading.Event — set to stop the loop immediately.
+        force_event: threading.Event — set to force an immediate re-check (auto-cleared).
+        pause_event: threading.Event — set to pause, clear to resume.
         on_answer:   callable(VisionResult) — called when an answer is ready.
         on_status:   callable(str) — called with status/log messages.
     """
-    cli = stop_event is None  # True when launched from the terminal
+    cli = stop_event is None
 
     def _log(msg: str) -> None:
         if on_status:
             on_status(msg)
         else:
             print(msg)
+
+    def _stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
 
     def _forced() -> bool:
         if force_event is not None:
@@ -326,8 +331,23 @@ def run_assist(
             return False
         return _drain_kb()
 
-    def _stopped() -> bool:
-        return False if stop_event is None else stop_event.is_set()
+    def _sleep(secs: float) -> None:
+        """Interruptible sleep — wakes immediately on stop or unpause."""
+        end = time.time() + secs
+        while time.time() < end and not _stopped():
+            time.sleep(0.05)
+
+    def _wait_if_paused() -> bool:
+        """Block while paused. Returns True if we should abort (stopped)."""
+        if pause_event is None or not pause_event.is_set():
+            return False
+        _log("[assist] Paused.")
+        while pause_event.is_set() and not _stopped():
+            time.sleep(0.1)
+        if _stopped():
+            return True
+        _log("[assist] Resumed.")
+        return False
 
     if cli:
         print("\n" + "─" * 60)
@@ -345,6 +365,9 @@ def run_assist(
 
     try:
         while not _stopped():
+            if _wait_if_paused():
+                break
+
             frame = screen_capture.capture()
             thumb = _thumb(frame.png_bytes)
             graph_frame = screen_capture.capture(region=config.GRAPH_REGION)
@@ -357,13 +380,15 @@ def run_assist(
             )
 
             if not screen_changed and not forced:
-                time.sleep(config.ASSIST_POLL_INTERVAL)
+                _sleep(config.ASSIST_POLL_INTERVAL)
                 continue
 
             if forced:
                 _log("[assist] Manual re-check triggered ...")
             else:
-                time.sleep(config.ASSIST_SETTLE_DELAY)
+                _sleep(config.ASSIST_SETTLE_DELAY)
+                if _stopped():
+                    break
                 frame = screen_capture.capture()
                 thumb = _thumb(frame.png_bytes)
                 graph_frame = screen_capture.capture(region=config.GRAPH_REGION)
@@ -373,12 +398,15 @@ def run_assist(
             last_graph_thumb = graph_thumb
             result = gemini_vision.analyze(frame.png_bytes)
 
+            if _stopped():
+                break
+
             if (result.screen_type == "question"
                     and result.question_present
                     and result.answer.strip()):
                 q = result.question_text.strip()
                 if q and q == last_question and not forced:
-                    time.sleep(config.ASSIST_POLL_INTERVAL)
+                    _sleep(config.ASSIST_POLL_INTERVAL)
                     continue
                 last_question = q
                 solved += 1
@@ -390,7 +418,7 @@ def run_assist(
                 last_question = ""
                 _log(f"[assist] {result.screen_type} — waiting for a question ...")
 
-            time.sleep(config.ASSIST_POLL_INTERVAL)
+            _sleep(config.ASSIST_POLL_INTERVAL)
 
     except KeyboardInterrupt:
         if cli:
