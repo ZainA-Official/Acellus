@@ -162,43 +162,24 @@ def run_auto(
             return
         x, y = pt
 
-        # Multi-part answers are comma-separated (e.g. "2,-2,4" for three [?] boxes).
-        # Single answers have no comma.
-        parts = [p.strip() for p in result.answer.split(",")]
-        is_multi = len(parts) > 1
-
         if dry_run:
-            if is_multi:
-                _log(f"[dry-run] would type {parts} into {pt} with Tab between parts, "
-                     "then Enter")
-            else:
-                _log(f"[dry-run] would type {result.answer!r} into {pt}, then Enter")
+            _log(f"[dry-run] would type {result.answer!r} into the field at {pt}, "
+                 "then Enter")
             return
 
         verify = config.AUTO_VERIFY_TYPING and bool(result.target_box)
         fr = _field_region(frame, result.target_box) if verify else None
         before = _thumb(_capture(fr).png_bytes) if verify else None
 
-        if is_multi:
-            # Click the input bar once to focus it, then type each part with Tab.
-            input_controller.click(x, y, "input bar")
+        for attempt in range(config.AUTO_ACTION_RETRIES + 1):
+            input_controller.answer_fill_in(x, y, result.answer)
             _sleep(0.3)
-            input_controller.clear_field()
-            for i, part in enumerate(parts):
-                input_controller.type_text(part, f"part {i + 1}/{len(parts)}")
-                if i < len(parts) - 1:
-                    input_controller.press_key("tab", "next blank")
-                    _sleep(0.15)
-        else:
-            for attempt in range(config.AUTO_ACTION_RETRIES + 1):
-                input_controller.answer_fill_in(x, y, parts[0])
-                _sleep(0.3)
-                if not verify:
-                    break
-                after = _thumb(_capture(fr).png_bytes)
-                if _frame_diff(before, after) >= config.AUTO_VERIFY_THRESHOLD:
-                    break
-                _log(f"[auto] Typing didn't register (attempt {attempt + 1}); retrying.")
+            if not verify:
+                break
+            after = _thumb(_capture(fr).png_bytes)
+            if _frame_diff(before, after) >= config.AUTO_VERIFY_THRESHOLD:
+                break
+            _log(f"[auto] Typing didn't register (attempt {attempt + 1}); retrying.")
 
         input_controller.press_key("enter", "submit")
 
