@@ -22,6 +22,7 @@ from tkinter import messagebox
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pyautogui
+from desktop_utils import ensure_default_desktop
 
 def _app_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -408,6 +409,7 @@ class SetupWizard:
             return
 
         # Time's up — read position now.
+        ensure_default_desktop()
         x, y = pyautogui.position()
         self._clicks.append((x, y))
         n = len(self._clicks)
@@ -447,6 +449,7 @@ class SetupWizard:
     # ── Mouse tracker ──────────────────────────────────────────────────────────
 
     def _track(self):
+        ensure_default_desktop()
         x, y = pyautogui.position()
         self._pos_var.set(f"({x}, {y})")
         self.win.after(50, self._track)

@@ -12,6 +12,8 @@ import time
 import pyautogui
 
 import config
+from desktop_utils import ensure_default_desktop
+
 
 # Safety: slamming the mouse into a screen corner aborts the program.
 pyautogui.FAILSAFE = True
@@ -25,6 +27,7 @@ def _rand(lo: float, hi: float) -> float:
 
 def move_to(x: int, y: int, label: str = "") -> None:
     """Move the mouse to (x, y) without clicking — reveals hover UI."""
+    ensure_default_desktop()
     if label:
         print(f"[input] hover → ({x}, {y})  «{label}»")
     pyautogui.moveTo(
@@ -40,6 +43,7 @@ def sweep(x1: int, y1: int, x2: int, y2: int,
     Drag the mouse from (x1,y1) to (x2,y2) without clicking.
     Upward movement (y1 > y2) is what triggers video control bars to appear.
     """
+    ensure_default_desktop()
     if label:
         print(f"[input] sweep ({x1},{y1}) → ({x2},{y2})  «{label}»")
     pyautogui.moveTo(x1, y1, duration=0.2)
@@ -53,6 +57,7 @@ def wiggle(x: int, y: int, amplitude: int = 20, reps: int = 4,
     visible. The control bar only stays up during active mouse movement;
     this keeps it alive long enough to screenshot and click.
     """
+    ensure_default_desktop()
     if label:
         print(f"[input] wiggle ({x},{y}) ±{amplitude}px x{reps}  «{label}»")
     for _ in range(reps):
@@ -63,6 +68,7 @@ def wiggle(x: int, y: int, amplitude: int = 20, reps: int = 4,
 
 def click(x: int, y: int, label: str = "") -> None:
     """Glide the mouse to (x, y) and click, with human-ish timing."""
+    ensure_default_desktop()
     if label:
         print(f"[input] click → ({x}, {y})  «{label}»")
     pyautogui.moveTo(
@@ -76,6 +82,7 @@ def click(x: int, y: int, label: str = "") -> None:
 
 def type_text(text: str, label: str = "") -> None:
     """Type a string with human-paced keystrokes."""
+    ensure_default_desktop()
     if not text:
         return
     if label:
@@ -87,6 +94,7 @@ def type_text(text: str, label: str = "") -> None:
 
 def clear_field() -> None:
     """Select-all + delete, to clear an input box before typing."""
+    ensure_default_desktop()
     pyautogui.hotkey("ctrl", "a")
     time.sleep(0.08)
     pyautogui.press("delete")
@@ -95,6 +103,7 @@ def clear_field() -> None:
 
 def press_key(key: str, label: str = "") -> None:
     """Press a single key or hotkey combination (e.g. 'enter', 'tab')."""
+    ensure_default_desktop()
     if label:
         print(f"[input] key   «{label}»: {key}")
     pyautogui.press(key)
@@ -108,6 +117,7 @@ def answer_fill_in(x: int, y: int, text: str, label: str = "answer") -> None:
     bug where typing went nowhere and only Enter registered). Does NOT press Enter
     — the caller submits after verifying text actually appeared.
     """
+    ensure_default_desktop()
     click(x, y, label)
     time.sleep(_rand(config.PRE_CLICK_DELAY_MIN, config.PRE_CLICK_DELAY_MAX))
     clear_field()

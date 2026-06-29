@@ -15,6 +15,8 @@ import mss
 from PIL import Image
 
 import config
+from desktop_utils import ensure_default_desktop
+
 
 
 @dataclass
@@ -52,6 +54,7 @@ def monitor_region(monitor: int | None = None) -> tuple[int, int, int, int]:
     (input bar, answer tiles, Continue button, video controls) is in-frame for
     bounding-box detection.
     """
+    ensure_default_desktop()
     with mss.mss() as sct:
         mon = sct.monitors[monitor if monitor is not None else config.CAPTURE_MONITOR]
         return (mon["left"], mon["top"], mon["width"], mon["height"])
@@ -64,6 +67,7 @@ def capture(region: tuple[int, int, int, int] | None = None) -> Frame:
     for this one call — used when a different area is needed (e.g. the full-width
     video control bar to read elapsed/total time).
     """
+    ensure_default_desktop()
     with mss.mss() as sct:
         if region is not None:
             left, top, width, height = region
