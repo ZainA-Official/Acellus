@@ -130,15 +130,6 @@ def run_auto(
     def _capture(region=auto_region):
         return screen_capture.capture(region=region)
 
-    def _field_region(frame, box, pad: int = 12):
-        """Screen-pixel (l,t,w,h) around a normalized box, for verify snapshots."""
-        ymin, xmin, ymax, xmax = box
-        left = frame.offset_x + int(xmin / 1000.0 * frame.width) - pad
-        top = frame.offset_y + int(ymin / 1000.0 * frame.height) - pad
-        w = int((xmax - xmin) / 1000.0 * frame.width) + 2 * pad
-        h = int((ymax - ymin) / 1000.0 * frame.height) + 2 * pad
-        return (left, top, max(w, 1), max(h, 1))
-
     # ── per-screen action handlers ──────────────────────────────────────────
 
     def _answer_multiple_choice(frame, result) -> None:
@@ -163,24 +154,11 @@ def run_auto(
         x, y = pt
 
         if dry_run:
-            _log(f"[dry-run] would type {result.answer!r} into the field at {pt}, "
-                 "then Enter")
+            _log(f"[dry-run] would type {result.answer!r} into field at {pt}, then Enter")
             return
 
-        verify = config.AUTO_VERIFY_TYPING and bool(result.target_box)
-        fr = _field_region(frame, result.target_box) if verify else None
-        before = _thumb(_capture(fr).png_bytes) if verify else None
-
-        for attempt in range(config.AUTO_ACTION_RETRIES + 1):
-            input_controller.answer_fill_in(x, y, result.answer)
-            _sleep(0.3)
-            if not verify:
-                break
-            after = _thumb(_capture(fr).png_bytes)
-            if _frame_diff(before, after) >= config.AUTO_VERIFY_THRESHOLD:
-                break
-            _log(f"[auto] Typing didn't register (attempt {attempt + 1}); retrying.")
-
+        input_controller.answer_fill_in(x, y, result.answer)
+        _sleep(0.3)
         input_controller.press_key("enter", "submit")
 
     def _handle_video() -> None:
