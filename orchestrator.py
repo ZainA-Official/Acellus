@@ -261,6 +261,7 @@ def run_auto(
     answered = 0
     idle_frames = 0
     last_question = ""
+    last_answer = ""
     stuck_count = 0
     last_auto_thumb = None   # for screen-change dedup (avoid API on unchanged frames)
     acted = True             # True on first iteration and after every action
@@ -326,11 +327,16 @@ def run_auto(
 
             idle_frames = 0
             q_key = result.question_text.strip()
+            a_key = result.answer.strip()
 
             # --- Stuck detection (also catches a missed click) ---
-            if q_key and q_key == last_question:
+            # For multi-part fill-in questions, consecutive sub-parts share the same
+            # question text but have different answers (different blank is green each
+            # time). Only call it stuck when BOTH the question text and Gemini's answer
+            # are unchanged — that means our action genuinely had no effect.
+            if q_key and q_key == last_question and a_key == last_answer:
                 stuck_count += 1
-                _log(f"[auto] Same question again (stuck x{stuck_count}).")
+                _log(f"[auto] Same question+answer (stuck x{stuck_count}).")
                 if stuck_count >= 2:
                     _log("[auto] Stuck — stopping.")
                     break
@@ -340,6 +346,7 @@ def run_auto(
                 stuck_count = 0
 
             last_question = q_key
+            last_answer = a_key
             _log(f"[auto] Q: {result.question_text[:120]}")
             _log(f"[auto] A: {result.answer}  [{result.answer_type}]")
             if on_answer:
