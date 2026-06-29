@@ -19,7 +19,8 @@ import config
 
 @dataclass
 class Frame:
-    png_bytes: bytes      # PNG-encoded screenshot
+    png_bytes: bytes      # encoded screenshot (PNG or JPEG depending on config)
+    mime_type: str        # "image/png" or "image/jpeg"
     offset_x: int         # left edge of capture region, in screen pixels
     offset_y: int         # top edge of capture region, in screen pixels
     width: int            # capture width in pixels
@@ -32,6 +33,28 @@ class Frame:
         px = self.offset_x + int((norm_x / 1000.0) * self.width)
         py = self.offset_y + int((norm_y / 1000.0) * self.height)
         return px, py
+
+    def box_center_to_screen(self, box: list[float]) -> tuple[int, int] | None:
+        """
+        Convert a normalized [ymin, xmin, ymax, xmax] (0-1000) bounding box into
+        the absolute screen pixel of its center. Returns None for a malformed box.
+        """
+        if not box or len(box) != 4:
+            return None
+        ymin, xmin, ymax, xmax = box
+        return self.to_screen((xmin + xmax) / 2.0, (ymin + ymax) / 2.0)
+
+
+def monitor_region(monitor: int | None = None) -> tuple[int, int, int, int]:
+    """Return (left, top, width, height) of a whole monitor in screen pixels.
+
+    Used by auto mode, which captures the full monitor so every click target
+    (input bar, answer tiles, Continue button, video controls) is in-frame for
+    bounding-box detection.
+    """
+    with mss.mss() as sct:
+        mon = sct.monitors[monitor if monitor is not None else config.CAPTURE_MONITOR]
+        return (mon["left"], mon["top"], mon["width"], mon["height"])
 
 
 def capture(region: tuple[int, int, int, int] | None = None) -> Frame:
@@ -67,10 +90,19 @@ def capture(region: tuple[int, int, int, int] | None = None) -> Frame:
             img = img.resize((max_w, new_h), Image.LANCZOS)
 
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        fmt = getattr(config, "IMAGE_FORMAT", "PNG").upper()
+        if fmt == "JPEG":
+            img = img.convert("RGB")  # JPEG doesn't support alpha channel
+            quality = getattr(config, "IMAGE_JPEG_QUALITY", 80)
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            mime = "image/jpeg"
+        else:
+            img.save(buf, format="PNG", optimize=True)
+            mime = "image/png"
 
         return Frame(
             png_bytes=buf.getvalue(),
+            mime_type=mime,
             offset_x=left,
             offset_y=top,
             width=width,

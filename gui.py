@@ -160,6 +160,7 @@ class ApexApp:
         self._worker: threading.Thread | None = None
         self._paused = False
         self._countdown_id = None   # after() handle for countdown ticks
+        self._mode = tk.StringVar(value="assist")   # "assist" or "auto"
 
         self._build()
         self._poll()
@@ -245,6 +246,19 @@ class ApexApp:
         row2.pack(fill="x", padx=14, pady=(0, 8))
         self._btn(row2, "⚙  Settings", PURPLE, self._open_setup).pack(side="left")
 
+        # Mode selector — Assist (you click) vs Auto (bot clicks & types)
+        tk.Label(row2, text="Mode:", bg=BG, fg=DIM,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(12, 4))
+        self._mode_radios = []
+        for label, val in (("Assist", "assist"), ("Auto", "auto")):
+            rb = tk.Radiobutton(
+                row2, text=label, value=val, variable=self._mode,
+                bg=BG, fg=TEXT, selectcolor=ACCENT, activebackground=BG,
+                activeforeground=TEXT, font=("Segoe UI", 9), cursor="hand2",
+            )
+            rb.pack(side="left")
+            self._mode_radios.append(rb)
+
         # Log
         tk.Label(root, text="Log", bg=BG, fg=DIM,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=14)
@@ -314,13 +328,18 @@ class ApexApp:
         self._log.configure(state="disabled")
 
     def _display_answer(self, result):
+        auto = self._mode.get() == "auto"
         if result.answer_type == "multiple_choice":
             where = orchestrator._choice_label(result)
             self._answer_var.set(result.answer)
-            self._hint_var.set(f"Click: {where}" if where else "Multiple choice")
+            if auto:
+                self._hint_var.set("Auto-clicking this answer …")
+            else:
+                self._hint_var.set(f"Click: {where}" if where else "Multiple choice")
         else:
             self._answer_var.set(result.answer)
-            self._hint_var.set("Type into the answer box, then press Enter")
+            self._hint_var.set("Auto-typing this answer …" if auto
+                               else "Type into the answer box, then press Enter")
         q = result.question_text.strip()
         self._q_var.set(f"Q: {q[:100]}" if q else "")
 
@@ -339,6 +358,8 @@ class ApexApp:
         self._pause_btn.configure(text="⏸  Pause", bg=BLUE, state="disabled")
         self._tpause_btn.configure(state="disabled")
         self._recheck_btn.configure(state="disabled")
+        for rb in self._mode_radios:
+            rb.configure(state="normal")
         self._answer_var.set("—")
         self._hint_var.set("")
         self._q_var.set("")
@@ -347,6 +368,17 @@ class ApexApp:
 
     def _on_start(self):
         if self._worker and self._worker.is_alive():
+            return
+        auto = self._mode.get() == "auto"
+        if auto and not messagebox.askyesno(
+            "Start Auto mode?",
+            "Auto mode will CONTROL your real mouse and keyboard to click and "
+            "type answers in Acellus.\n\n"
+            "• Bring Acellus to the foreground before it starts.\n"
+            "• Slam the mouse into a screen corner, or press Stop, to abort.\n\n"
+            "Start Auto mode now?",
+            parent=self.root,
+        ):
             return
         self._stop_ev.clear()
         self._force_ev.clear()
@@ -360,7 +392,9 @@ class ApexApp:
         self._pause_btn.configure(text="⏸  Pause", bg=BLUE, state="normal")
         self._tpause_btn.configure(state="normal")
         self._recheck_btn.configure(state="normal")
-        self._append_log("[assist] Started.")
+        for rb in self._mode_radios:
+            rb.configure(state="disabled")
+        self._append_log(f"[{self._mode.get()}] Started.")
 
     def _on_stop(self):
         self._cancel_countdown()
@@ -437,7 +471,9 @@ class ApexApp:
     # ── Background thread ─────────────────────────────────────────────────────
 
     def _loop(self):
-        orchestrator.run_assist(
+        runner = (orchestrator.run_auto if self._mode.get() == "auto"
+                  else orchestrator.run_assist)
+        runner(
             stop_event  = self._stop_ev,
             force_event = self._force_ev,
             pause_event = self._pause_ev,

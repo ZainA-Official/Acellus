@@ -1,0 +1,13 @@
+{
+  "_note": "Legacy hard-coded click coordinates from before auto mode became vision-grounded. These keys are no longer read by the app — kept here in case of revert.",
+  "INPUT_BAR": [1230, 946],
+  "CONTINUE_BTN": [1528, 840],
+  "CHOICE_Y": 855,
+  "MC3_POSITIONS": [[1411, 709], [1476, 709], [1556, 709]],
+  "MC4_POSITIONS": [[1043, 750], [1399, 767], [1098, 838], [1454, 837]],
+  "VIDEO_HOVER": [1100, 980],
+  "VIDEO_SETTINGS": [1694, 901],
+  "VIDEO_SPEED_MENU": [1694, 812],
+  "VIDEO_SPEED_1_5X": [1681, 851],
+  "VIDEO_TIME_REGION": [1560, 878, 220, 34]
+}

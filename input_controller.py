@@ -98,3 +98,17 @@ def press_key(key: str, label: str = "") -> None:
     if label:
         print(f"[input] key   «{label}»: {key}")
     pyautogui.press(key)
+
+
+def answer_fill_in(x: int, y: int, text: str, label: str = "answer") -> None:
+    """
+    Robustly enter a fill-in answer: click the field to focus it, clear any
+    existing content, then type. Clearing first forces a key event into the
+    focused element, which surfaces the "clicked but never focused" case (the old
+    bug where typing went nowhere and only Enter registered). Does NOT press Enter
+    — the caller submits after verifying text actually appeared.
+    """
+    click(x, y, label)
+    time.sleep(_rand(config.PRE_CLICK_DELAY_MIN, config.PRE_CLICK_DELAY_MAX))
+    clear_field()
+    type_text(text, label)

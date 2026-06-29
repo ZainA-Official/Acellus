@@ -6,7 +6,7 @@ Coordinates/clicks are handled by fixed hardcoded positions in the orchestrator.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import time
@@ -29,6 +29,17 @@ class VisionResult:
     click_y: float = 0.0
     num_choices: int = 0            # 2 or 4 for MC questions
     choice_index: int = 0           # 1-4 for 4-option MC; 1-2 for 2-option MC
+    # Auto mode: normalized [ymin, xmin, ymax, xmax] (0-1000) bounding box of the
+    # element to act on this frame — the input field (fill_in), the correct answer
+    # tile (multiple_choice), or the Continue button (score). Empty if not provided.
+    target_box: list[float] = field(default_factory=list)
+
+    def box_center(self) -> tuple[float, float] | None:
+        """Normalized (x, y) center of target_box, or None if no box."""
+        if not self.target_box or len(self.target_box) != 4:
+            return None
+        ymin, xmin, ymax, xmax = self.target_box
+        return ((xmin + xmax) / 2.0, (ymin + ymax) / 2.0)
 
 
 _SCHEMA = {
@@ -49,6 +60,10 @@ _SCHEMA = {
         "choice_index": {"type": "integer"},  # 1-4, which option is correct
         "click_x": {"type": "number"},        # normalized 0-1000, 2-option MC only
         "click_y": {"type": "number"},
+        "target_box": {                        # [ymin, xmin, ymax, xmax] 0-1000
+            "type": "array",
+            "items": {"type": "number"},
+        },
     },
     "required": ["screen_type", "question_present", "answer"],
 }
@@ -67,10 +82,10 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
-def analyze(png_bytes: bytes) -> VisionResult:
+def analyze(png_bytes: bytes, mime_type: str = "image/png") -> VisionResult:
     """Send screenshot to Gemini, return question text and answer."""
     client = _get_client()
-    image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type=mime_type)
 
     last_error = None
     for attempt in range(config.MAX_RETRIES + 1):
@@ -81,8 +96,9 @@ def analyze(png_bytes: bytes) -> VisionResult:
                 config=types.GenerateContentConfig(
                     system_instruction=config.GEMINI_SYSTEM_INSTRUCTION,
                     temperature=1.0,
-                    max_output_tokens=4096,
-                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    max_output_tokens=512,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=config.GEMINI_THINKING_BUDGET),
                     response_mime_type="application/json",
                     response_schema=_SCHEMA,
                 ),
@@ -127,14 +143,14 @@ _VIDEO_TIME_PROMPT = (
 )
 
 
-def read_video_remaining(png_bytes: bytes) -> float:
+def read_video_remaining(png_bytes: bytes, mime_type: str = "image/png") -> float:
     """
     Move mouse has already revealed the video controls. Send the screenshot
     and ask Gemini to read remaining seconds. Cheap call — tiny schema.
     Returns seconds remaining (float), or 30.0 as a fallback.
     """
     client = _get_client()
-    image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type=mime_type)
     try:
         response = client.models.generate_content(
             model=config.GEMINI_MODEL,
@@ -156,6 +172,55 @@ def read_video_remaining(png_bytes: bytes) -> float:
         return 30.0
 
 
+_LOCATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "found": {"type": "boolean"},
+        "box": {"type": "array", "items": {"type": "number"}},  # [ymin,xmin,ymax,xmax]
+    },
+    "required": ["found"],
+}
+
+
+def locate(png_bytes: bytes, what: str, mime_type: str = "image/png") -> list[float] | None:
+    """
+    Find a single UI element described by `what` and return its bounding box as
+    normalized [ymin, xmin, ymax, xmax] (0-1000), or None if not visible.
+
+    Cheap, no-thinking call used for the multi-step video flow (gear icon, speed
+    menu, 1.5x option, play overlay). Returns None on any failure so callers can
+    fall back gracefully rather than misclick.
+    """
+    client = _get_client()
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type=mime_type)
+    prompt = (
+        f"Look at this screenshot. Find: {what}. "
+        "If it is clearly visible, set found=true and return its bounding box as "
+        "[ymin, xmin, ymax, xmax] normalized to 0-1000. "
+        "If it is not visible or you are unsure, set found=false."
+    )
+    try:
+        response = client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=128,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                response_mime_type="application/json",
+                response_schema=_LOCATE_SCHEMA,
+            ),
+        )
+        data = json.loads(response.text or "{}")
+        if not data.get("found"):
+            return None
+        box = [float(v) for v in (data.get("box") or [])][:4]
+        return box if len(box) == 4 else None
+    except Exception as exc:
+        print(f"[gemini] locate({what!r}) failed: {exc}")
+        return None
+
+
 def _parse(response) -> VisionResult:
     raw = response.text or "{}"
     try:
@@ -163,6 +228,14 @@ def _parse(response) -> VisionResult:
     except json.JSONDecodeError:
         print(f"[gemini] Bad JSON ({len(raw)} chars): {raw[:300]}")
         return VisionResult(question_present=False)
+
+    raw_box = data.get("target_box") or []
+    try:
+        target_box = [float(v) for v in raw_box][:4]
+        if len(target_box) != 4:
+            target_box = []
+    except (TypeError, ValueError):
+        target_box = []
 
     return VisionResult(
         question_present=bool(data.get("question_present", False)),
@@ -174,4 +247,5 @@ def _parse(response) -> VisionResult:
         click_y=float(data.get("click_y") or 0),
         num_choices=int(data.get("num_choices") or 0),
         choice_index=int(data.get("choice_index") or 0),
+        target_box=target_box,
     )

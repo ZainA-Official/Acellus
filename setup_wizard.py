@@ -1,9 +1,12 @@
 """
 setup_wizard.py — First-run setup and settings for ApexAutomation.
 
-All steps are shown in a sidebar so you can jump to any step at any time,
-skip steps you don't need, and come back to fix individual ones later.
-Saves to user_config.json — config.py loads it on every launch.
+Three steps: API key, question-card capture region (Assist mode), graph region
+(Assist mode graph-change detection). All the old click-coordinate steps have
+been removed — Auto mode now locates every click target by vision (Gemini
+bounding boxes) so no screen calibration is needed for clicking.
+
+Legacy coordinates are preserved in user_config_legacy_coords.json if needed.
 
 Run standalone:  python setup_wizard.py
 From the GUI:    Settings button
@@ -20,7 +23,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pyautogui
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_config.json")
+def _app_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(_app_dir(), "user_config.json")
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 BG      = "#1a1a2e"
@@ -34,13 +42,13 @@ TEXT    = "#eaeaea"
 DIM     = "#7f8c8d"
 BLUE    = "#2196f3"
 
-# ── Step short names (for sidebar) and full definitions ────────────────────────
+# ── Step definitions ───────────────────────────────────────────────────────────
 # capture_type:
-#   "text"     → text entry field     → saved as string
-#   "point"    → one mouse capture    → saved as [x,y] → expands to _X/_Y
-#   "point_y"  → one capture, y only → saved as int   → CHOICE_Y
-#   "region"   → two captures TL→BR  → saved as [l,t,w,h]
-#   "points_N" → N mouse captures    → saved as [[x,y]×N]
+#   "text"   → text entry field    → saved as string
+#   "region" → two captures TL→BR → saved as [l,t,w,h]
+#
+# Only three steps remain. Auto mode finds every click target by vision
+# (Gemini bounding boxes), so no click-coordinate calibration is needed.
 
 STEPS: list[tuple[str, str, str, str, str]] = [
     # (save_key, sidebar_name, full_label, capture_type, description)
@@ -58,109 +66,23 @@ STEPS: list[tuple[str, str, str, str, str]] = [
         "Question Card",
         "Question Card Area",
         "region",
-        "The white box that shows the math problem.\n\n"
+        "Used by Assist mode: the white box that shows the math problem.\n"
+        "A tight crop here gives Gemini a cleaner view of the question.\n\n"
         "Capture 1: hover over the TOP-LEFT corner of the card, then click Capture.\n"
-        "Capture 2: hover over the BOTTOM-RIGHT corner, then click Capture.",
-    ),
-    (
-        "INPUT_BAR",
-        "Answer Bar",
-        "Fill-in Answer Bar",
-        "point",
-        "The dark text input box where you type fill-in answers.\n\n"
-        "Hover over the CENTER of that bar, then click Capture.",
-    ),
-    (
-        "CONTINUE_BTN",
-        "Continue Btn",
-        "Continue Button",
-        "point",
-        "The Continue button that appears on score/results screens.\n\n"
-        "If one is visible now, hover over its center and click Capture.\n"
-        "Otherwise click Skip — the built-in default will be used.",
-    ),
-    (
-        "CHOICE_Y",
-        "Yes / No Row",
-        "2-Option MC Row (Yes / No)",
-        "point_y",
-        "For Yes/No questions the two tiles sit side-by-side in a single row.\n\n"
-        "Hover over either tile (only the Y coordinate is saved), then Capture.",
-    ),
-    (
-        "MC3_POSITIONS",
-        "3-Option MC",
-        "3-Option Multiple Choice",
-        "points_3",
-        "Three answer tiles in a vertical column (top / middle / bottom).\n\n"
-        "Capture three times:\n"
-        "  1st: hover over the TOP tile\n"
-        "  2nd: hover over the MIDDLE tile\n"
-        "  3rd: hover over the BOTTOM tile",
-    ),
-    (
-        "MC4_POSITIONS",
-        "4-Option MC",
-        "4-Option Multiple Choice (2×2 grid)",
-        "points_4",
-        "Four answer tiles arranged in a 2×2 grid.\n\n"
-        "Capture four times:\n"
-        "  1st: TOP-LEFT\n"
-        "  2nd: TOP-RIGHT\n"
-        "  3rd: BOTTOM-LEFT\n"
-        "  4th: BOTTOM-RIGHT",
-    ),
-    (
-        "VIDEO_HOVER",
-        "Video Start",
-        "Video Sweep Start",
-        "point",
-        "The bot sweeps the mouse upward from the bottom of the video\n"
-        "to reveal the control bar.\n\n"
-        "Hover near the very bottom of the video area, then Capture.",
-    ),
-    (
-        "VIDEO_SETTINGS",
-        "Settings Btn",
-        "Video Settings (Gear) Button",
-        "point",
-        "The gear icon on the video control bar.\n\n"
-        "Hover over the video to reveal the bar, then hover over\n"
-        "the gear icon and click Capture.",
-    ),
-    (
-        "VIDEO_SPEED_MENU",
-        "Speed Menu",
-        "Video Speed Menu Item",
-        "point",
-        "After clicking the gear icon a popup opens with a 'Speed' item.\n\n"
-        "Open the menu, hover over 'Speed', then click Capture.",
-    ),
-    (
-        "VIDEO_SPEED_1_5X",
-        "1.5× Option",
-        "Video 1.5× Speed Option",
-        "point",
-        "After clicking Speed, a submenu shows the available speeds.\n\n"
-        "Hover over '1.5×', then click Capture.",
-    ),
-    (
-        "VIDEO_TIME_REGION",
-        "Time Display",
-        "Video Time Display",
-        "region",
-        "The time counter on the video bar (e.g. '1:23 / 5:00').\n\n"
-        "Capture 1: hover over the LEFT edge of the time text.\n"
-        "Capture 2: hover over the RIGHT edge of the time text.",
+        "Capture 2: hover over the BOTTOM-RIGHT corner, then click Capture.\n\n"
+        "You can skip this — the full monitor will be used as a fallback.",
     ),
     (
         "GRAPH_REGION",
         "Graph Area",
         "Graph / Chart Area",
         "region",
-        "Some questions display a graph alongside the text.\n\n"
-        "Capture 1: hover over the TOP-LEFT corner of the graph.\n"
-        "Capture 2: hover over the BOTTOM-RIGHT corner.",
+        "Used by Assist mode: some questions show a graph alongside the text.\n"
+        "This region is watched separately so a new graph triggers a re-check\n"
+        "even when the question text hasn't changed.\n\n"
+        "Capture 1: hover over the TOP-LEFT corner of the graph area.\n"
+        "Capture 2: hover over the BOTTOM-RIGHT corner.\n\n"
+        "You can skip this if you don't use Assist mode or have no graph questions.",
     ),
 ]
 
@@ -182,7 +104,6 @@ class SetupWizard:
         self._saved: dict = {}
         self._step = 0
         self._clicks: list[tuple[int, int]] = []
-        self._clicks_needed = 1
         self._sidebar_rows: list[tuple[tk.Frame, tk.Label, tk.Label]] = []
 
         self._load_existing()
@@ -391,18 +312,11 @@ class SetupWizard:
             existing = self._saved.get(save_key, "")
             self._entry_var.set(existing if isinstance(existing, str) else "")
             self._win_after(lambda: self._entry.focus_set())
-        else:
+        else:  # region
             self._entry_frame.pack_forget()
             self._mouse_frame.pack(fill="x", pady=(8, 0))
-            if ctype == "region":
-                self._clicks_needed = 2
-                self._cap_btn.configure(text="Capture 1 — Top-Left")
-            elif ctype.startswith("points_"):
-                self._clicks_needed = int(ctype.split("_")[1])
-                self._cap_btn.configure(text="Capture Point 1")
-            else:
-                self._clicks_needed = 1
-                self._cap_btn.configure(text="Capture")
+            self._clicks_needed = 2
+            self._cap_btn.configure(text="Capture 1 — Top-Left")
 
         # Re-order: desc → input panel → action row → status
         self._desc_lbl.pack_forget()
@@ -469,50 +383,52 @@ class SetupWizard:
             self._update_sidebar()
             return
 
+        # For region captures the user must move their mouse to the target AFTER
+        # clicking the button. A 3-second countdown gives them time to do that
+        # without the captured position being the button itself.
+        n_pending = len(self._clicks) + 1
+        corner = "Top-Left" if n_pending == 1 else "Bottom-Right"
+        self._cap_btn.configure(state="disabled")
+        self._skip_btn.configure(state="disabled")
+        self._status_var.set(
+            f"Move your mouse to the {corner} corner — capturing in 3 …"
+        )
+        self.win.update()
+        self._countdown_capture(save_key, remaining=3)
+
+    def _countdown_capture(self, save_key: str, remaining: int):
+        n_pending = len(self._clicks) + 1
+        corner = "Top-Left" if n_pending == 1 else "Bottom-Right"
+
+        if remaining > 0:
+            self._status_var.set(
+                f"Move your mouse to the {corner} corner — capturing in {remaining} …"
+            )
+            self.win.after(1000, lambda: self._countdown_capture(save_key, remaining - 1))
+            return
+
+        # Time's up — read position now.
         x, y = pyautogui.position()
         self._clicks.append((x, y))
         n = len(self._clicks)
 
-        if ctype == "region":
-            if n == 1:
-                self._cap_btn.configure(text="Capture 2 — Bottom-Right")
-                self._collect_lbl.configure(text=f"TL ({x},{y})")
-                self._status_var.set(f"Top-left captured at ({x},{y}) — now bottom-right")
-            else:
-                x1, y1 = self._clicks[0]; x2, y2 = self._clicks[1]
-                left = min(x1, x2); top = min(y1, y2)
-                w = abs(x2 - x1); h = abs(y2 - y1)
-                self._saved[save_key] = [left, top, w, h]
-                self._collect_lbl.configure(text=f"✓ {w}×{h}px")
-                self._status_var.set(f"Saved ({left},{top},{w},{h})")
-                self._cap_btn.configure(text="Re-capture 1 — Top-Left")
-                self._clicks = []
-                self._update_sidebar()
+        self._cap_btn.configure(state="normal")
+        self._skip_btn.configure(state="normal")
 
-        elif ctype.startswith("points_"):
-            self._collect_lbl.configure(text=f"{n}/{self._clicks_needed}")
-            self._status_var.set(f"Point {n}: ({x},{y})")
-            if n >= self._clicks_needed:
-                self._saved[save_key] = [[px, py] for px, py in self._clicks]
-                self._cap_btn.configure(text="Re-capture Point 1")
-                self._clicks = []
-                self._update_sidebar()
-            else:
-                self._cap_btn.configure(text=f"Capture Point {n + 1}")
-
-        elif ctype == "point_y":
-            self._saved[save_key] = y
-            self._collect_lbl.configure(text=f"✓ y={y}")
-            self._status_var.set(f"Saved Y={y}")
-            self._cap_btn.configure(text="Re-capture")
-            self._clicks = []
-            self._update_sidebar()
-
-        else:  # "point"
-            self._saved[save_key] = [x, y]
-            self._collect_lbl.configure(text=f"✓ ({x},{y})")
-            self._status_var.set(f"Saved ({x},{y})")
-            self._cap_btn.configure(text="Re-capture")
+        if n == 1:
+            self._cap_btn.configure(text="Capture 2 — Bottom-Right")
+            self._collect_lbl.configure(text=f"TL ({x},{y})")
+            self._status_var.set(
+                f"Top-left captured at ({x},{y}).  Now position for Bottom-Right."
+            )
+        else:
+            x1, y1 = self._clicks[0]; x2, y2 = self._clicks[1]
+            left = min(x1, x2); top = min(y1, y2)
+            w = abs(x2 - x1); h = abs(y2 - y1)
+            self._saved[save_key] = [left, top, w, h]
+            self._collect_lbl.configure(text=f"✓ {w}×{h}px")
+            self._status_var.set(f"Saved ({left},{top},{w},{h})")
+            self._cap_btn.configure(text="Re-capture 1 — Top-Left")
             self._clicks = []
             self._update_sidebar()
 

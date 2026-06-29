@@ -84,6 +84,30 @@ MAX_IDLE_FRAMES = 3
 MAX_QUESTIONS = None
 
 # ─────────────────────────────────────────────
+# AUTO MODE (the bot clicks AND types for you)
+# ─────────────────────────────────────────────
+# Auto mode locates every click target by VISION (target_box from Gemini) and
+# clicks the box center — it does NOT use the fixed pixel coordinates above
+# (INPUT_BAR_*, MC*_POSITIONS, CHOICE_Y, CONTINUE_BTN_*, VIDEO_*). Those remain
+# only for Assist mode hints / the setup wizard.
+
+# Capture the WHOLE monitor in auto mode so every target (input bar, tiles,
+# Continue button, video controls) is in-frame for box detection. The tight
+# CAPTURE_REGION used by Assist cuts off the input bar. None = full monitor.
+AUTO_CAPTURE_REGION = None
+
+AUTO_POLL_INTERVAL = 1.0       # seconds between screen checks while idle/loading
+AUTO_SETTLE_DELAY = 0.8        # wait after a screen change before solving
+AUTO_ACTION_RETRIES = 1        # retry a fill-in once if typing didn't register
+AUTO_VERIFY_TYPING = True      # re-screenshot the field to confirm text appeared
+AUTO_VERIFY_THRESHOLD = 4.0    # mean per-pixel diff that counts as "text appeared"
+
+# Video flow timing (vision-guided 1.5x with fallback to waiting at 1x).
+AUTO_VIDEO_REVEAL_DURATION = 0.8   # upward sweep duration to reveal controls
+AUTO_VIDEO_STEP_DELAY = 0.5        # wait between gear -> speed -> 1.5x clicks
+AUTO_VIDEO_BUFFER = 4.0            # extra seconds added to the wait
+
+# ─────────────────────────────────────────────
 # ASSIST MODE (you click, the bot solves)
 # ─────────────────────────────────────────────
 # In assist mode the bot never touches the mouse/keyboard. It watches the
@@ -123,15 +147,33 @@ TYPING_DELAY_MAX = 0.12
 # Get a free key at https://aistudio.google.com/apikey
 GEMINI_API_KEY = ""
 GEMINI_MODEL = "gemini-2.5-flash"
-IMAGE_MAX_WIDTH = None
+
+# ── Image compression ──────────────────────────────────────────────────────────
+# Sending smaller images is the fastest way to cut token costs.
+# JPEG at quality 80 is ~5-8× smaller than PNG for screenshots and Gemini
+# reads it just as accurately. Set IMAGE_FORMAT = "PNG" to revert.
+IMAGE_FORMAT = "JPEG"
+IMAGE_JPEG_QUALITY = 80
+
+# Maximum width in pixels before downscaling. Auto mode captures the full
+# monitor (e.g. 2560px) — capping at 1280 halves the image tokens.
+# None = send at full resolution.
+IMAGE_MAX_WIDTH = 1280
+
+# ── Thinking budget ────────────────────────────────────────────────────────────
+# Thinking tokens cost ~20× more than regular tokens ($3.50/M vs $0.15/M).
+# 0 = no thinking (default, much cheaper). Raise to 512–1024 only if Gemini
+# struggles with a particular type of question.
+GEMINI_THINKING_BUDGET = 0
 
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 RETRY_JITTER = 1.0
 
-# Gemini's only job now is to READ the question and return the correct answer.
-# Coordinates are handled by fixed positions above -- Gemini does NOT need to
-# locate UI elements, which was causing all the vision mistakes.
+# Gemini reads the question, returns the correct answer, AND locates the exact
+# on-screen element to act on as a bounding box (target_box). Auto mode clicks the
+# CENTER of that box, so it adapts to wherever the element actually renders --
+# replacing the old fixed pixel coordinates that kept missing.
 GEMINI_SYSTEM_INSTRUCTION = (
     "You are looking at a screenshot of the Acellus learning app. "
     "Identify the screen type, then respond accordingly.\n\n"
@@ -142,6 +184,11 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "  'score'    -- score/results card (%, Accuracy, Reward, Continue button).\n"
     "  'other'    -- loading, transition, or anything else.\n\n"
 
+    "BOUNDING BOXES (target_box):\n"
+    "  When asked below, return target_box as [ymin, xmin, ymax, xmax] with every\n"
+    "  value normalized to 0-1000 relative to THIS image. Make the box tightly\n"
+    "  enclose the element so its center lands squarely on the clickable area.\n\n"
+
     "IF screen_type == 'question':\n"
     "  Read carefully. Coefficients matter: '7x' = seven times x, not just x. "
     "  En-dash (--) between terms = subtraction.\n\n"
@@ -150,29 +197,25 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "  'fill_in'        -- there is a text input bar to type into.\n"
     "  'multiple_choice'-- there are clickable answer tiles (Yes/No, A/B/C/D, etc.).\n\n"
 
-    "  For 'fill_in': set answer to the value to type. "
-    "  Leave click_x and click_y as 0.\n\n"
+    "  For 'fill_in': set answer to the value to type, and set target_box around the\n"
+    "    text input bar/box where the answer should be typed.\n\n"
 
     "  For 'multiple_choice':\n"
-    "    Count the answer tiles. Set num_choices to 2 or 4.\n"
-    "    Set answer to the text of the correct choice.\n\n"
+    "    Count the answer tiles and set num_choices (2, 3, or 4).\n"
+    "    Set answer to the text of the correct choice.\n"
+    "    Set target_box around the CORRECT answer tile (the one to click).\n"
+    "    Also set choice_index to the correct tile number, numbering by layout:\n"
+    "      4 tiles (2x2): 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right.\n"
+    "      3 tiles (column): 1=top, 2=middle, 3=bottom.\n"
+    "      2 tiles (side-by-side): 1=left, 2=right.\n"
+    "    For 2 tiles also set click_x to the normalized x center (0-1000).\n\n"
 
-    "    If num_choices == 4 (2x2 grid layout):\n"
-    "      Number them: 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right.\n"
-    "      Set choice_index to the correct tile number (1, 2, 3, or 4).\n"
-    "      Leave click_x and click_y as 0.\n\n"
+    "IF screen_type == 'score':\n"
+    "  set question_present=false, answer='', and set target_box around the\n"
+    "  'Continue' (or next) button.\n\n"
 
-    "    If num_choices == 3 (vertical column of 3 tiles):\n"
-    "      Number them top to bottom: 1=top, 2=middle, 3=bottom.\n"
-    "      Set choice_index to the correct tile number (1, 2, or 3).\n"
-    "      Leave click_x and click_y as 0.\n\n"
-
-    "    If num_choices == 2 (side-by-side layout, e.g. Yes/No):\n"
-    "      Set choice_index to 1 (left tile) or 2 (right tile).\n"
-    "      Set click_x to the NORMALIZED x center (0-1000) of the correct tile.\n"
-    "      Leave click_y as 0.\n\n"
-
-    "IF screen_type != 'question': set question_present=false, answer=''.\n\n"
+    "IF screen_type is 'video' or 'other': set question_present=false, answer='',\n"
+    "  and leave target_box empty.\n\n"
 
     "Return ONLY the JSON."
 )
@@ -186,7 +229,16 @@ GEMINI_SYSTEM_INSTRUCTION = (
 # MC dicts (MC3_POSITIONS, MC4_POSITIONS) → list of [x,y] → {1:(x,y), …}.
 # CHOICE_Y → int.
 
-import json as _json, os as _os
+import json as _json, os as _os, sys as _sys
+
+# When packaged with PyInstaller (--onefile), __file__ is inside the temp
+# extraction folder. user_config.json must live next to the exe so it persists
+# across runs. sys.executable gives the exe path in frozen mode; __file__ works
+# correctly in normal script mode.
+def _app_dir() -> str:
+    if getattr(_sys, "frozen", False):
+        return _os.path.dirname(_sys.executable)
+    return _os.path.dirname(_os.path.abspath(__file__))
 
 _POINT_KEYS = {
     "INPUT_BAR":       ("INPUT_BAR_X",       "INPUT_BAR_Y"),
@@ -198,7 +250,7 @@ _POINT_KEYS = {
 }
 _REGION_KEYS = {"CAPTURE_REGION", "VIDEO_TIME_REGION", "GRAPH_REGION"}
 
-_ucfg_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "user_config.json")
+_ucfg_path = _os.path.join(_app_dir(), "user_config.json")
 if _os.path.exists(_ucfg_path):
     with open(_ucfg_path) as _f:
         _ucfg = _json.load(_f)
