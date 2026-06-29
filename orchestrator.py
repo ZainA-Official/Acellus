@@ -298,6 +298,24 @@ def run_auto(
                     break
                 continue
 
+            # --- Navigation (goal overlay, course-select, popups) ---
+            if stype == "navigation":
+                pt = frame.box_center_to_screen(result.target_box)
+                if dry_run:
+                    _log(f"[dry-run] would click navigation target at {pt}")
+                elif pt is not None:
+                    _log(f"[auto] Navigation screen — clicking to continue at {pt}.")
+                    input_controller.click(pt[0], pt[1], "navigation")
+                    _sleep(config.AUTO_SETTLE_DELAY * 2)
+                else:
+                    _log("[auto] Navigation screen but no target found — waiting.")
+                    _sleep(config.AFTER_ADVANCE_DELAY)
+                idle_frames = 0
+                acted = True
+                if once:
+                    break
+                continue
+
             # --- Score / results ---
             if stype == "score":
                 pt = frame.box_center_to_screen(result.target_box)

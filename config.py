@@ -179,10 +179,15 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "Identify the screen type, then respond accordingly.\n\n"
 
     "SCREEN TYPES:\n"
-    "  'question' -- an answerable question (fill-in box OR multiple-choice tiles).\n"
-    "  'video'    -- a lesson video is playing.\n"
-    "  'score'    -- score/results card (%, Accuracy, Reward, Continue button).\n"
-    "  'other'    -- loading, transition, or anything else.\n\n"
+    "  'question'   -- an answerable question (fill-in box OR multiple-choice tiles).\n"
+    "  'video'      -- a lesson video is playing.\n"
+    "  'score'      -- score/results card (%, Accuracy, Reward, Continue button).\n"
+    "  'navigation' -- any screen that is blocking progress and needs a click to\n"
+    "                  continue: goal-completion overlays, 'You reached your goal!'\n"
+    "                  banners, X/close buttons on popups, course-selection screens\n"
+    "                  where the user must click back into a course (e.g. Precalculus),\n"
+    "                  or any interstitial that is NOT a question, video, or score card.\n"
+    "  'other'      -- loading spinner or true transition with nothing to click yet.\n\n"
 
     "BOUNDING BOXES (target_box):\n"
     "  When asked below, return target_box as [ymin, xmin, ymax, xmax] with every\n"
@@ -228,6 +233,13 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "IF screen_type == 'score':\n"
     "  set question_present=false, answer='', and set target_box around the\n"
     "  'Continue' (or next) button.\n\n"
+
+    "IF screen_type == 'navigation':\n"
+    "  set question_present=false, answer='', and set target_box around the single\n"
+    "  best element to click to make progress: the X/close button on a goal overlay,\n"
+    "  the correct course tile to navigate back into, or a dismiss/continue button.\n"
+    "  Pick the action that resumes the lesson -- closing a popup first, then clicking\n"
+    "  back into the course if on a course-selection screen.\n\n"
 
     "IF screen_type is 'video' or 'other': set question_present=false, answer='',\n"
     "  and leave target_box empty.\n\n"
