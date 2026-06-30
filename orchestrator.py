@@ -35,6 +35,7 @@ except (AttributeError, ValueError):
     pass
 
 from PIL import Image
+import pyautogui
 
 import config
 import screen_capture
@@ -289,6 +290,37 @@ def run_auto(
             _log(f"[auto] ~{secs:.0f}s left at 1x → waiting {wait:.0f}s.")
         _sleep(wait)
 
+    def _attempt_recovery(frame) -> None:
+        """
+        Try to unstick an unrecognized or blocked screen: locate a close (X)
+        button, 'OK'/'Dismiss'/'Continue' button, or anything else that would
+        close a popup/notification/overlay, and click it. Falls back to
+        pressing Escape. Never raises — this exists purely so an overnight,
+        unattended run keeps going instead of idling forever or giving up.
+        """
+        if _stopped():
+            return
+        box = None
+        try:
+            box = _call_gemini_interruptible(
+                gemini_vision.locate, frame.png_bytes,
+                "a close (X) button, an 'OK'/'Got it'/'Dismiss'/'Continue' "
+                "button, or any other element that would close a popup, "
+                "notification, or overlay currently blocking the lesson content",
+                frame.mime_type, stopped_fn=_stopped)
+        except Exception as exc:
+            _log(f"[auto] Recovery lookup failed ({exc!r}); falling back to Escape.")
+        if box is not None and not _stopped():
+            pt = frame.box_center_to_screen(box)
+            if pt is not None:
+                _log("[auto] Recovery: closing detected popup/overlay.")
+                if not dry_run:
+                    input_controller.click(pt[0], pt[1], "dismiss popup (recovery)")
+                return
+        _log("[auto] Recovery: nothing found to click — pressing Escape.")
+        if not dry_run:
+            input_controller.press_key("esc", "recovery")
+
     # ── startup ───────────────────────────────────────────────────────────────
 
     if cli:
@@ -319,121 +351,160 @@ def run_auto(
             if _wait_if_paused():
                 break
 
-            frame = _capture()
-            thumb = _thumb(frame.png_bytes)
-            if (not acted
-                    and last_auto_thumb is not None
-                    and _frame_diff(last_auto_thumb, thumb) < config.ASSIST_CHANGE_THRESHOLD):
-                _sleep(config.AUTO_POLL_INTERVAL)
-                continue
-            last_auto_thumb = thumb
+            # Everything below is wrapped so an unexpected error (a Gemini call
+            # that exhausted its own retries, a transient screenshot failure,
+            # etc.) logs and cools down instead of crashing an overnight run.
+            # The mouse-to-corner failsafe is the one error that must still
+            # propagate — it's the user's deliberate emergency abort.
+            try:
+                frame = _capture()
+                thumb = _thumb(frame.png_bytes)
+                if (not acted
+                        and last_auto_thumb is not None
+                        and _frame_diff(last_auto_thumb, thumb) < config.ASSIST_CHANGE_THRESHOLD):
+                    _sleep(config.AUTO_POLL_INTERVAL)
+                    continue
+                last_auto_thumb = thumb
 
-            _log(f"[auto] Captured {frame.width}x{frame.height}. Asking Gemini ...")
-            result = _call_gemini_interruptible(
-                gemini_vision.analyze, frame.png_bytes, frame.mime_type,
-                stopped_fn=_stopped)
-            if result is None or _stopped():
-                break
-
-            stype = result.screen_type
-
-            # --- Video ---
-            if stype == "video":
-                _handle_video()
-                idle_frames = 0
-                acted = True
-                if once:
+                _log(f"[auto] Captured {frame.width}x{frame.height}. Asking Gemini ...")
+                result = _call_gemini_interruptible(
+                    gemini_vision.analyze, frame.png_bytes, frame.mime_type,
+                    stopped_fn=_stopped)
+                if result is None or _stopped():
                     break
-                continue
 
-            # --- Navigation (goal overlay, course-select, popups) ---
-            if stype == "navigation":
-                pt = frame.box_center_to_screen(result.target_box)
-                if dry_run:
-                    _log(f"[dry-run] would click navigation target at {pt}")
-                elif pt is not None:
-                    _log(f"[auto] Navigation screen — clicking to continue at {pt}.")
-                    input_controller.click(pt[0], pt[1], "navigation")
-                    _sleep(config.AUTO_SETTLE_DELAY * 2)
+                stype = result.screen_type
+
+                # --- Video ---
+                if stype == "video":
+                    _handle_video()
+                    idle_frames = 0
+                    acted = True
+                    if once:
+                        break
+                    continue
+
+                # --- Navigation (goal overlay, course-select, popups) ---
+                if stype == "navigation":
+                    pt = frame.box_center_to_screen(result.target_box)
+                    if dry_run:
+                        _log(f"[dry-run] would click navigation target at {pt}")
+                    elif pt is not None:
+                        _log(f"[auto] Navigation screen — clicking to continue at {pt}.")
+                        input_controller.click(pt[0], pt[1], "navigation")
+                        _sleep(config.AUTO_SETTLE_DELAY * 2)
+                    else:
+                        _log("[auto] Navigation screen but no target found — waiting.")
+                        _sleep(config.AFTER_ADVANCE_DELAY)
+                    idle_frames = 0
+                    acted = True
+                    if once:
+                        break
+                    continue
+
+                # --- Score / results ---
+                if stype == "score":
+                    pt = frame.box_center_to_screen(result.target_box)
+                    if dry_run:
+                        _log(f"[dry-run] would click Continue at {pt}")
+                    elif pt is not None:
+                        input_controller.click(pt[0], pt[1], "Continue")
+                    else:
+                        _log("[auto] Continue button not located; waiting.")
+                    _sleep(config.POST_CONTINUE_DELAY)
+                    idle_frames = 0
+                    acted = True
+                    if once:
+                        break
+                    continue
+
+                # --- No answerable question (unknown screen, popup, loading) ---
+                if not result.question_present or not result.answer.strip():
+                    idle_frames += 1
+                    acted = False
+                    _log(f"[auto] {stype} — waiting (idle {idle_frames}) ...")
+                    if once:
+                        break
+                    # Never give up permanently here — this is meant to run
+                    # unattended for hours. Periodically try to actively clear
+                    # whatever's blocking progress (e.g. a notification popup
+                    # that isn't a recognized screen_type) instead of idling
+                    # forever, and back off the poll interval between tries.
+                    if idle_frames % config.IDLE_RECOVERY_ATTEMPTS == 0:
+                        _attempt_recovery(frame)
+                    else:
+                        backoff = min(config.AUTO_POLL_INTERVAL * idle_frames,
+                                      config.IDLE_MAX_POLL_INTERVAL)
+                        _sleep(backoff)
+                    continue
+
+                idle_frames = 0
+                q_key = result.question_text.strip()
+                a_key = result.answer.strip()
+
+                # --- Stuck detection (also catches a missed click) ---
+                # For multi-part fill-in questions, consecutive sub-parts share the same
+                # question text but have different answers (different blank is green each
+                # time). Only call it stuck when BOTH the question text and Gemini's answer
+                # are unchanged — that means our action genuinely had no effect.
+                stuck = bool(q_key) and q_key == last_question and a_key == last_answer
+                if stuck:
+                    stuck_count += 1
+                    _log(f"[auto] Same question+answer "
+                         f"(stuck x{stuck_count}/{config.STUCK_RETRY_LIMIT}).")
+                    if stuck_count >= config.STUCK_RETRY_LIMIT:
+                        _log("[auto] Giving up on this question after repeated "
+                             "attempts — clearing it and moving on (run continues).")
+                        if not dry_run:
+                            input_controller.press_key("esc", "force-clear stuck question")
+                        stuck_count = 0
+                        last_question = ""
+                        last_answer = ""
+                        idle_frames = 0
+                        acted = True
+                        _sleep(config.AFTER_ADVANCE_DELAY * 2)
+                        continue
+                    if stuck_count >= 2:
+                        # Our last click/type may have been swallowed by a stray
+                        # overlay (notification, popup) — try to clear it, then
+                        # fall through below to retry the SAME answer this frame.
+                        _log("[auto] Action may be blocked — attempting recovery before retry.")
+                        _attempt_recovery(frame)
                 else:
-                    _log("[auto] Navigation screen but no target found — waiting.")
-                    _sleep(config.AFTER_ADVANCE_DELAY)
-                idle_frames = 0
-                acted = True
-                if once:
-                    break
-                continue
+                    stuck_count = 0
 
-            # --- Score / results ---
-            if stype == "score":
-                pt = frame.box_center_to_screen(result.target_box)
-                if dry_run:
-                    _log(f"[dry-run] would click Continue at {pt}")
-                elif pt is not None:
-                    input_controller.click(pt[0], pt[1], "Continue")
+                last_question = q_key
+                last_answer = a_key
+                _log(f"[auto] Q: {result.question_text[:120]}")
+                _log(f"[auto] A: {result.answer}  [{result.answer_type}]")
+                if on_answer:
+                    on_answer(result)
+
+                if result.answer_type == "multiple_choice":
+                    _answer_multiple_choice(frame, result)
                 else:
-                    _log("[auto] Continue button not located; waiting.")
-                _sleep(config.POST_CONTINUE_DELAY)
-                idle_frames = 0
+                    _answer_fill_in(frame, result)
+
                 acted = True
+                answered += 1
+                _log(f"[auto] Question #{answered} submitted.")
+
                 if once:
                     break
-                continue
-
-            # --- No answerable question ---
-            if not result.question_present or not result.answer.strip():
-                idle_frames += 1
-                acted = False
-                _log(f"[auto] {stype} — waiting "
-                     f"(idle {idle_frames}/{config.MAX_IDLE_FRAMES}) ...")
-                if once or idle_frames >= config.MAX_IDLE_FRAMES:
+                if config.MAX_QUESTIONS and answered >= config.MAX_QUESTIONS:
+                    _log("[auto] Reached MAX_QUESTIONS — stopping.")
                     break
+
                 _sleep(config.AFTER_ADVANCE_DELAY)
+
+            except pyautogui.FailSafeException:
+                raise
+            except Exception as exc:
+                _log(f"[auto] Unexpected error this cycle: {exc!r} — "
+                     f"recovering in {config.ERROR_COOLDOWN:.0f}s.")
+                acted = False
+                _sleep(config.ERROR_COOLDOWN)
                 continue
-
-            idle_frames = 0
-            q_key = result.question_text.strip()
-            a_key = result.answer.strip()
-
-            # --- Stuck detection (also catches a missed click) ---
-            # For multi-part fill-in questions, consecutive sub-parts share the same
-            # question text but have different answers (different blank is green each
-            # time). Only call it stuck when BOTH the question text and Gemini's answer
-            # are unchanged — that means our action genuinely had no effect.
-            if q_key and q_key == last_question and a_key == last_answer:
-                stuck_count += 1
-                _log(f"[auto] Same question+answer (stuck x{stuck_count}).")
-                if stuck_count >= 2:
-                    _log("[auto] Stuck — stopping.")
-                    break
-                _sleep(config.AFTER_ADVANCE_DELAY * 2)
-                continue
-            else:
-                stuck_count = 0
-
-            last_question = q_key
-            last_answer = a_key
-            _log(f"[auto] Q: {result.question_text[:120]}")
-            _log(f"[auto] A: {result.answer}  [{result.answer_type}]")
-            if on_answer:
-                on_answer(result)
-
-            if result.answer_type == "multiple_choice":
-                _answer_multiple_choice(frame, result)
-            else:
-                _answer_fill_in(frame, result)
-
-            acted = True
-            answered += 1
-            _log(f"[auto] Question #{answered} submitted.")
-
-            if once:
-                break
-            if config.MAX_QUESTIONS and answered >= config.MAX_QUESTIONS:
-                _log("[auto] Reached MAX_QUESTIONS — stopping.")
-                break
-
-            _sleep(config.AFTER_ADVANCE_DELAY)
 
     except KeyboardInterrupt:
         if cli:
@@ -589,59 +660,68 @@ def run_assist(
             if _wait_if_paused():
                 break
 
-            frame = screen_capture.capture()
-            thumb = _thumb(frame.png_bytes)
-            graph_frame = screen_capture.capture(region=config.GRAPH_REGION)
-            graph_thumb = _thumb(graph_frame.png_bytes)
-
-            forced = _forced()
-            screen_changed = (
-                _frame_diff(last_thumb, thumb) >= config.ASSIST_CHANGE_THRESHOLD
-                or _frame_diff(last_graph_thumb, graph_thumb) >= config.ASSIST_GRAPH_CHANGE_THRESHOLD
-            )
-
-            if not screen_changed and not forced:
-                _sleep(config.ASSIST_POLL_INTERVAL)
-                continue
-
-            if forced:
-                _log("[assist] Manual re-check triggered ...")
-            else:
-                _sleep(config.ASSIST_SETTLE_DELAY)
-                if _stopped():
-                    break
+            # Wrapped so a Gemini/network hiccup logs and cools down instead
+            # of silently killing an overnight watch session.
+            try:
                 frame = screen_capture.capture()
                 thumb = _thumb(frame.png_bytes)
                 graph_frame = screen_capture.capture(region=config.GRAPH_REGION)
                 graph_thumb = _thumb(graph_frame.png_bytes)
 
-            last_thumb = thumb
-            last_graph_thumb = graph_thumb
-            result = _call_gemini_interruptible(
-                gemini_vision.analyze, frame.png_bytes, frame.mime_type,
-                stopped_fn=_stopped)
+                forced = _forced()
+                screen_changed = (
+                    _frame_diff(last_thumb, thumb) >= config.ASSIST_CHANGE_THRESHOLD
+                    or _frame_diff(last_graph_thumb, graph_thumb) >= config.ASSIST_GRAPH_CHANGE_THRESHOLD
+                )
 
-            if result is None or _stopped():
-                break
-
-            if (result.screen_type == "question"
-                    and result.question_present
-                    and result.answer.strip()):
-                q = result.question_text.strip()
-                if q and q == last_question and not forced:
+                if not screen_changed and not forced:
                     _sleep(config.ASSIST_POLL_INTERVAL)
                     continue
-                last_question = q
-                solved += 1
-                if on_answer:
-                    on_answer(result)
-                else:
-                    _show_answer_banner(result)
-            else:
-                last_question = ""
-                _log(f"[assist] {result.screen_type} — waiting for a question ...")
 
-            _sleep(config.ASSIST_POLL_INTERVAL)
+                if forced:
+                    _log("[assist] Manual re-check triggered ...")
+                else:
+                    _sleep(config.ASSIST_SETTLE_DELAY)
+                    if _stopped():
+                        break
+                    frame = screen_capture.capture()
+                    thumb = _thumb(frame.png_bytes)
+                    graph_frame = screen_capture.capture(region=config.GRAPH_REGION)
+                    graph_thumb = _thumb(graph_frame.png_bytes)
+
+                last_thumb = thumb
+                last_graph_thumb = graph_thumb
+                result = _call_gemini_interruptible(
+                    gemini_vision.analyze, frame.png_bytes, frame.mime_type,
+                    stopped_fn=_stopped)
+
+                if result is None or _stopped():
+                    break
+
+                if (result.screen_type == "question"
+                        and result.question_present
+                        and result.answer.strip()):
+                    q = result.question_text.strip()
+                    if q and q == last_question and not forced:
+                        _sleep(config.ASSIST_POLL_INTERVAL)
+                        continue
+                    last_question = q
+                    solved += 1
+                    if on_answer:
+                        on_answer(result)
+                    else:
+                        _show_answer_banner(result)
+                else:
+                    last_question = ""
+                    _log(f"[assist] {result.screen_type} — waiting for a question ...")
+
+                _sleep(config.ASSIST_POLL_INTERVAL)
+
+            except Exception as exc:
+                _log(f"[assist] Unexpected error this cycle: {exc!r} — "
+                     f"recovering in {config.ERROR_COOLDOWN:.0f}s.")
+                _sleep(config.ERROR_COOLDOWN)
+                continue
 
     except KeyboardInterrupt:
         if cli:

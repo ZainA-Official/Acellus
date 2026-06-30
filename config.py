@@ -80,8 +80,32 @@ AFTER_ADVANCE_DELAY = 3.0
 POST_CONTINUE_DELAY = 8.0    # wait after clicking Continue before first check
 VIDEO_POLL_INTERVAL = 30.0
 ACTION_PACING = 0.5
-MAX_IDLE_FRAMES = 3
 MAX_QUESTIONS = None
+
+# ─────────────────────────────────────────────
+# OVERNIGHT RESILIENCE
+# ─────────────────────────────────────────────
+# Auto mode is meant to run unattended for hours. It must never permanently
+# stop itself on a mistake — only skip/clear the current question or screen
+# and keep going. The CLI/GUI stop button, Ctrl+C, or the mouse-to-corner
+# failsafe are the only things that should end a run early.
+
+# How many consecutive identical (question, answer) pairs in a row before we
+# give up retrying THIS question, force-clear it (Escape), and move on.
+STUCK_RETRY_LIMIT = 6
+
+# After this many consecutive idle/unrecognized frames, actively try to clear
+# whatever's blocking progress (popup, notification) instead of just waiting.
+IDLE_RECOVERY_ATTEMPTS = 3
+
+# Idle polling backs off (idle_frames * AUTO_POLL_INTERVAL) up to this cap,
+# rather than ever giving up and stopping the run.
+IDLE_MAX_POLL_INTERVAL = 20.0
+
+# If a Gemini call or any other step throws after its own internal retries
+# are exhausted, sleep this long before the next loop cycle instead of
+# crashing the whole run.
+ERROR_COOLDOWN = 15.0
 
 # ─────────────────────────────────────────────
 # AUTO MODE (the bot clicks AND types for you)
