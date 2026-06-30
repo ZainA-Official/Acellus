@@ -147,7 +147,30 @@ def run_auto(
             input_controller.click(pt[0], pt[1], result.answer)
 
     def _answer_fill_in(frame, result) -> None:
-        pt = frame.box_center_to_screen(result.target_box)
+        nonlocal cached_fill_in_box
+
+        raw_box = result.target_box
+        box = raw_box
+
+        # Gemini's bounding box for the (fixed) input bar drifts slightly
+        # frame-to-frame. Lock to the first good detection; only accept a new
+        # box if it differs by more than ~6% of the image (60 out of 1000 units).
+        if cached_fill_in_box and raw_box and len(raw_box) == 4:
+            oy, ox = (cached_fill_in_box[0] + cached_fill_in_box[2]) / 2, \
+                     (cached_fill_in_box[1] + cached_fill_in_box[3]) / 2
+            ny, nx = (raw_box[0] + raw_box[2]) / 2, \
+                     (raw_box[1] + raw_box[3]) / 2
+            dist = ((ox - nx) ** 2 + (oy - ny) ** 2) ** 0.5
+            if dist < 60:
+                box = cached_fill_in_box  # bar hasn't moved — don't jitter
+                _log(f"[auto] Using cached input-bar position (drift={dist:.1f}).")
+            else:
+                _log(f"[auto] Input-bar box changed significantly (drift={dist:.1f}); updating cache.")
+                cached_fill_in_box = raw_box
+        elif raw_box and len(raw_box) == 4:
+            cached_fill_in_box = raw_box  # first detection — save it
+
+        pt = frame.box_center_to_screen(box)
         if pt is None:
             _log("[auto] Could not locate the input field; skipping (will retry).")
             return
@@ -265,6 +288,7 @@ def run_auto(
     stuck_count = 0
     last_auto_thumb = None   # for screen-change dedup (avoid API on unchanged frames)
     acted = True             # True on first iteration and after every action
+    cached_fill_in_box: list[float] | None = None  # stable input-bar box across questions
 
     try:
         while not _stopped():
