@@ -146,27 +146,49 @@ def run_auto(
         else:
             input_controller.click(pt[0], pt[1], result.answer)
 
+    def _box_center(b: list[float]) -> tuple[float, float]:
+        return ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+
+    def _box_dist(a: list[float], b: list[float]) -> float:
+        ay, ax = _box_center(a)
+        by, bx = _box_center(b)
+        return ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+
     def _answer_fill_in(frame, result) -> None:
-        nonlocal cached_fill_in_box
+        nonlocal cached_fill_in_box, pending_fill_in_box, pending_fill_in_count
 
         raw_box = result.target_box
         box = raw_box
 
-        # Gemini's bounding box for the (fixed) input bar drifts slightly
-        # frame-to-frame. Lock to the first good detection; only accept a new
-        # box if it differs by more than ~6% of the image (60 out of 1000 units).
+        # Gemini's bounding box for the (fixed) input bar can drift slightly
+        # frame-to-frame, especially right after a misread question — a single
+        # bad reading must NOT be allowed to drag the click target around.
+        # Lock to the first good detection. A new box is only accepted as the
+        # real position once it shows up TWICE in a row (hysteresis); a
+        # one-off divergent reading is ignored and we keep using the cache.
+        SNAP_THRESHOLD = 60  # ~6% of image — "same spot" tolerance
         if cached_fill_in_box and raw_box and len(raw_box) == 4:
-            oy, ox = (cached_fill_in_box[0] + cached_fill_in_box[2]) / 2, \
-                     (cached_fill_in_box[1] + cached_fill_in_box[3]) / 2
-            ny, nx = (raw_box[0] + raw_box[2]) / 2, \
-                     (raw_box[1] + raw_box[3]) / 2
-            dist = ((ox - nx) ** 2 + (oy - ny) ** 2) ** 0.5
-            if dist < 60:
+            dist = _box_dist(cached_fill_in_box, raw_box)
+            if dist < SNAP_THRESHOLD:
                 box = cached_fill_in_box  # bar hasn't moved — don't jitter
-                _log(f"[auto] Using cached input-bar position (drift={dist:.1f}).")
+                pending_fill_in_box = None
+                pending_fill_in_count = 0
             else:
-                _log(f"[auto] Input-bar box changed significantly (drift={dist:.1f}); updating cache.")
-                cached_fill_in_box = raw_box
+                if pending_fill_in_box and _box_dist(pending_fill_in_box, raw_box) < SNAP_THRESHOLD:
+                    pending_fill_in_count += 1
+                else:
+                    pending_fill_in_box = raw_box
+                    pending_fill_in_count = 1
+
+                if pending_fill_in_count >= 2:
+                    _log(f"[auto] Input bar position confirmed changed (drift={dist:.1f}); updating cache.")
+                    cached_fill_in_box = raw_box
+                    box = raw_box
+                    pending_fill_in_box = None
+                    pending_fill_in_count = 0
+                else:
+                    _log(f"[auto] Ignoring one-off box drift (drift={dist:.1f}); keeping cached position.")
+                    box = cached_fill_in_box
         elif raw_box and len(raw_box) == 4:
             cached_fill_in_box = raw_box  # first detection — save it
 
@@ -289,6 +311,8 @@ def run_auto(
     last_auto_thumb = None   # for screen-change dedup (avoid API on unchanged frames)
     acted = True             # True on first iteration and after every action
     cached_fill_in_box: list[float] | None = None  # stable input-bar box across questions
+    pending_fill_in_box: list[float] | None = None  # candidate replacement, awaiting confirmation
+    pending_fill_in_count = 0
 
     try:
         while not _stopped():

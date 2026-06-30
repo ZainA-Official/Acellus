@@ -153,12 +153,14 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # JPEG at quality 80 is ~5-8× smaller than PNG for screenshots and Gemini
 # reads it just as accurately. Set IMAGE_FORMAT = "PNG" to revert.
 IMAGE_FORMAT = "JPEG"
-IMAGE_JPEG_QUALITY = 80
+IMAGE_JPEG_QUALITY = 88
 
 # Maximum width in pixels before downscaling. Auto mode captures the full
-# monitor (e.g. 2560px) — capping at 1280 halves the image tokens.
+# monitor (e.g. 2560px) — capping too aggressively blurs small glyphs like
+# +/- signs and causes misreads. 1600 keeps math symbols legible while still
+# cutting image tokens substantially vs. full resolution.
 # None = send at full resolution.
-IMAGE_MAX_WIDTH = 1280
+IMAGE_MAX_WIDTH = 1600
 
 # ── Thinking budget ────────────────────────────────────────────────────────────
 # Thinking tokens cost ~20× more than regular tokens ($3.50/M vs $0.15/M).
@@ -196,7 +198,12 @@ GEMINI_SYSTEM_INSTRUCTION = (
 
     "IF screen_type == 'question':\n"
     "  Read carefully. Coefficients matter: '7x' = seven times x, not just x. "
-    "  En-dash (--) between terms = subtraction.\n\n"
+    "  En-dash (--) between terms = subtraction.\n"
+    "  PLUS vs MINUS: these are easy to confuse, especially in compressed or small\n"
+    "  text -- look closely. A minus/en-dash (-, --) is a single short horizontal\n"
+    "  stroke with NO vertical part. A plus (+) has both a horizontal AND a\n"
+    "  vertical stroke crossing in the middle. Before finalizing the answer,\n"
+    "  re-check every +/- sign in the question against this rule; do not guess.\n\n"
 
     "  answer_type must be one of:\n"
     "  'fill_in'        -- there is a text input bar to type into.\n"
