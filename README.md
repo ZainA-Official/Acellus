@@ -81,8 +81,19 @@ loops capture → Gemini → click/type → verify → advance, handling:
   way, waits out the remaining time and moves on.
 - **Navigation / popups**: clicks the located dismiss/continue/course target, then verifies
   the screen actually changed. If a click has no visible effect for several frames, it
-  escalates — actively hunting for a close button and pressing Escape — instead of clicking
-  the same dead spot forever.
+  escalates to goal-directed recovery (below) instead of clicking the same dead spot forever.
+
+### Goal-directed recovery (the safety net)
+
+Recognized screens (question / video / score / navigation) use the cheap fast path. When
+the bot is genuinely stuck or sees something it doesn't recognize, it falls back to a single
+token-cheap Gemini call (`decide_action`) that gets the screenshot **and** the course goal
+(`config.COURSE_GOAL`) and returns the one best next action: click a specific element,
+press a key (e.g. Escape to close a stray menu), scroll, wait, or "done". This is what lets
+it handle the unscripted stuff — dismissing an unexpected notification, re-entering the
+course from a menu, or **resuming a video it accidentally paused** — without a hand-written
+handler for each case. Because it only runs on the slow path, it costs almost nothing during
+a normal run. Point the bot at a different course by editing `COURSE_GOAL`.
 
 ### Stopping
 

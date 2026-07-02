@@ -221,6 +221,94 @@ def locate(png_bytes: bytes, what: str, mime_type: str = "image/png") -> list[fl
         return None
 
 
+@dataclass
+class Action:
+    """One next step chosen by the goal-directed recovery reasoner."""
+    action: str = "wait"          # click | key | scroll_up | scroll_down | wait | done
+    box: list[float] = field(default_factory=list)  # [ymin,xmin,ymax,xmax] 0-1000 (click)
+    key: str = ""                 # key name for action == "key" (e.g. "esc", "enter")
+    reason: str = ""              # short human-readable rationale, for logging
+
+
+_ACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["click", "key", "scroll_up", "scroll_down", "wait", "done"],
+        },
+        "box": {"type": "array", "items": {"type": "number"}},  # [ymin,xmin,ymax,xmax]
+        "key": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["action"],
+}
+
+
+def decide_action(png_bytes: bytes, goal: str,
+                  mime_type: str = "image/png") -> Action:
+    """
+    Goal-directed recovery: the fast path is stuck or sees an unexpected screen.
+    Given the screenshot and the overall goal, return the SINGLE best next action
+    to get unstuck and keep making progress.
+
+    Deliberately cheap (no thinking, tiny schema, tight token cap) so it can be
+    the universal fallback without blowing the token budget — it only runs on the
+    slow path (idle/stuck/navigation-stuck), never on normal recognized screens.
+    Falls back to a harmless Escape on any failure.
+    """
+    client = _get_client()
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type=mime_type)
+    prompt = (
+        f"You control the Acellus learning app with a mouse and keyboard. "
+        f"Your goal: {goal}\n"
+        "The normal automation is stuck or the screen is unexpected. Pick the "
+        "SINGLE best next action to get unstuck and keep progressing:\n"
+        "- Popup/notification/overlay blocking the lesson: click its close (X) or "
+        "an OK/Got it/Dismiss/Continue button.\n"
+        "- Course-selection or menu screen: click the tile/link that re-enters the "
+        "course named in the goal.\n"
+        "- A PAUSED video (large play/triangle shown, or progress bar not moving): "
+        "click the play button or the center of the video to resume it.\n"
+        "- A stray menu is open over the lesson: action='key', key='esc'.\n"
+        "- The needed control is off-screen on a scrollable page: scroll_up/scroll_down.\n"
+        "- Nothing actionable yet (loading/spinner): action='wait'.\n"
+        "- The lesson is already progressing and nothing blocks it: action='done'.\n"
+        "For action='click' return box as [ymin, xmin, ymax, xmax] normalized 0-1000 "
+        "tightly around the element to click. Keep reason under 8 words. Return ONLY JSON."
+    )
+    try:
+        response = client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=128,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                response_mime_type="application/json",
+                response_schema=_ACTION_SCHEMA,
+            ),
+        )
+        data = json.loads(response.text or "{}")
+        act = str(data.get("action") or "wait")
+        raw_box = data.get("box") or []
+        try:
+            box = [float(v) for v in raw_box][:4]
+            if len(box) != 4:
+                box = []
+        except (TypeError, ValueError):
+            box = []
+        return Action(
+            action=act,
+            box=box,
+            key=str(data.get("key") or ""),
+            reason=str(data.get("reason") or ""),
+        )
+    except Exception as exc:
+        print(f"[gemini] decide_action failed: {exc}")
+        return Action(action="key", key="esc", reason="reasoner failed; escape")
+
+
 def _parse(response) -> VisionResult:
     raw = response.text or "{}"
     try:

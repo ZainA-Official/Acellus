@@ -341,36 +341,77 @@ def run_auto(
             _log(f"[auto] ~{secs:.0f}s left at 1x → waiting {wait:.0f}s.")
         _sleep(wait)
 
+    def _execute_action(frame, action) -> bool:
+        """
+        Carry out one recovery Action chosen by the goal-directed reasoner.
+        Returns True if it actually did something (so the caller knows progress
+        was attempted). Never raises.
+        """
+        if action is None or _stopped():
+            return False
+        a = action.action
+        why = action.reason or a
+
+        if a == "click":
+            pt = frame.box_center_to_screen(action.box) if action.box else None
+            if pt is not None:
+                _log(f"[auto] Recovery: click «{why}».")
+                if not dry_run:
+                    input_controller.click(pt[0], pt[1], "recovery")
+                return True
+            # Reasoner said click but gave no usable box — degrade to Escape.
+            _log(f"[auto] Recovery: click had no box ({why}); pressing Escape.")
+            if not dry_run:
+                input_controller.press_key("esc", "recovery")
+            return True
+
+        if a == "key":
+            k = (action.key or "esc").lower()
+            _log(f"[auto] Recovery: press {k} ({why}).")
+            if not dry_run:
+                input_controller.press_key(k, "recovery")
+            return True
+
+        if a in ("scroll_up", "scroll_down"):
+            amount = 300 if a == "scroll_up" else -300
+            _log(f"[auto] Recovery: {a} ({why}).")
+            if not dry_run:
+                input_controller.scroll(amount, "recovery")
+            return True
+
+        if a == "wait":
+            _log(f"[auto] Recovery: waiting ({why}).")
+            _sleep(config.AFTER_ADVANCE_DELAY)
+            return False
+
+        # "done" or anything unrecognized — the reasoner sees no blocker.
+        _log(f"[auto] Recovery: nothing to do ({why}).")
+        return False
+
     def _attempt_recovery(frame) -> None:
         """
-        Try to unstick an unrecognized or blocked screen: locate a close (X)
-        button, 'OK'/'Dismiss'/'Continue' button, or anything else that would
-        close a popup/notification/overlay, and click it. Falls back to
-        pressing Escape. Never raises — this exists purely so an overnight,
-        unattended run keeps going instead of idling forever or giving up.
+        Universal safety net for an unrecognized or blocked screen. Instead of
+        only hunting for a close button, ask Gemini — given the course goal and
+        this screenshot — for the single best next action to get unstuck (dismiss
+        a popup, re-enter the course, resume a paused video, press Escape, scroll,
+        or wait) and carry it out. Never raises — this exists purely so an
+        unattended run keeps making progress instead of idling forever.
         """
         if _stopped():
             return
-        box = None
+        action = None
         try:
-            box = _call_gemini_interruptible(
-                gemini_vision.locate, frame.png_bytes,
-                "a close (X) button, an 'OK'/'Got it'/'Dismiss'/'Continue' "
-                "button, or any other element that would close a popup, "
-                "notification, or overlay currently blocking the lesson content",
+            action = _call_gemini_interruptible(
+                gemini_vision.decide_action, frame.png_bytes, config.COURSE_GOAL,
                 frame.mime_type, stopped_fn=_stopped)
         except Exception as exc:
-            _log(f"[auto] Recovery lookup failed ({exc!r}); falling back to Escape.")
-        if box is not None and not _stopped():
-            pt = frame.box_center_to_screen(box)
-            if pt is not None:
-                _log("[auto] Recovery: closing detected popup/overlay.")
-                if not dry_run:
-                    input_controller.click(pt[0], pt[1], "dismiss popup (recovery)")
-                return
-        _log("[auto] Recovery: nothing found to click — pressing Escape.")
-        if not dry_run:
-            input_controller.press_key("esc", "recovery")
+            _log(f"[auto] Recovery decision failed ({exc!r}); pressing Escape.")
+            if not dry_run:
+                input_controller.press_key("esc", "recovery")
+            return
+        if action is None or _stopped():
+            return
+        _execute_action(frame, action)
 
     # ── startup ───────────────────────────────────────────────────────────────
 

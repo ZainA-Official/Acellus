@@ -153,6 +153,22 @@ AUTO_VIDEO_USE_FIXED_FALLBACK = True
 NAV_STUCK_LIMIT = 4
 
 # ─────────────────────────────────────────────
+# GOAL-DIRECTED RECOVERY
+# ─────────────────────────────────────────────
+# When the cheap fast path is stuck or sees an unexpected screen, auto mode asks
+# Gemini — given this goal and the screenshot — for the SINGLE best next action to
+# get unstuck (close a popup, re-enter the course, resume a paused video, press
+# Escape, scroll, or wait). This is the universal safety net so you never have to
+# babysit UI navigation. It runs ONLY on the slow path, so it stays token-cheap.
+# Edit this text to point the bot at a different course.
+COURSE_GOAL = (
+    "Work through and complete the Precalculus course in the Acellus app. Keep "
+    "answering questions, advancing through lessons and videos, and dismissing "
+    "anything (popups, notifications, goal overlays, menus) that blocks progress. "
+    "If a video is paused, resume it."
+)
+
+# ─────────────────────────────────────────────
 # ASSIST MODE (you click, the bot solves)
 # ─────────────────────────────────────────────
 # In assist mode the bot never touches the mouse/keyboard. It watches the

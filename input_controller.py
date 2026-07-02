@@ -109,6 +109,14 @@ def press_key(key: str, label: str = "") -> None:
     pyautogui.press(key)
 
 
+def scroll(amount: int, label: str = "") -> None:
+    """Scroll the mouse wheel. Positive = up, negative = down."""
+    ensure_default_desktop()
+    if label:
+        print(f"[input] scroll {amount:+d}  «{label}»")
+    pyautogui.scroll(amount)
+
+
 def answer_fill_in(x: int, y: int, text: str, label: str = "answer") -> None:
     """
     Enter a fill-in answer: click the field, triple-click to select any existing
