@@ -72,9 +72,28 @@ loops capture → Gemini → click/type → verify → advance, handling:
 - **Multiple-choice**: locates the correct answer tile by vision and clicks its center.
   Works for 2-, 3-, and 4-option layouts without any fixed grid positions.
 - **Score screens**: locates the Continue button by vision and clicks it.
-- **Videos**: reveals controls with an upward sweep, then attempts gear → Speed → 1.5× by
-  vision. Confirms the video is still playing (resumes if paused). If any step fails,
-  falls back to waiting at 1× speed. Either way, waits out the remaining time and moves on.
+- **Videos**: re-summons the auto-hiding control bar right before each capture and each
+  click (so the bar/menu is actually on screen when the click lands), then walks
+  gear → Speed → 1.5×. Each step is located by vision with a couple of retries; if vision
+  can't find an element, it falls back to the calibrated fixed coordinate from the setup
+  wizard (the control bar renders at a fixed spot, so this is reliable). Confirms the video
+  is still playing (resumes if paused). If the whole chain fails, waits at 1× speed. Either
+  way, waits out the remaining time and moves on.
+- **Navigation / popups**: clicks the located dismiss/continue/course target, then verifies
+  the screen actually changed. If a click has no visible effect for several frames, it
+  escalates to goal-directed recovery (below) instead of clicking the same dead spot forever.
+
+### Goal-directed recovery (the safety net)
+
+Recognized screens (question / video / score / navigation) use the cheap fast path. When
+the bot is genuinely stuck or sees something it doesn't recognize, it falls back to a single
+token-cheap Gemini call (`decide_action`) that gets the screenshot **and** the course goal
+(`config.COURSE_GOAL`) and returns the one best next action: click a specific element,
+press a key (e.g. Escape to close a stray menu), scroll, wait, or "done". This is what lets
+it handle the unscripted stuff — dismissing an unexpected notification, re-entering the
+course from a menu, or **resuming a video it accidentally paused** — without a hand-written
+handler for each case. Because it only runs on the slow path, it costs almost nothing during
+a normal run. Point the bot at a different course by editing `COURSE_GOAL`.
 
 ### Stopping
 
@@ -105,6 +124,10 @@ Launch `ApexAutomation.pyw` (no terminal) or `python gui.py`.
 | `AFTER_ADVANCE_DELAY` | Wait between questions while the next one loads |
 | `AUTO_ACTION_RETRIES` | How many times to retry typing if the field didn't register |
 | `AUTO_VERIFY_TYPING` | Re-screenshot the field to confirm text appeared before submitting |
+| `AUTO_VIDEO_LOCATE_TRIES` | Retries per video-control step (gear/speed/1.5×) before fallback |
+| `AUTO_VIDEO_USE_FIXED_FALLBACK` | Use calibrated fixed coords when vision can't find a control |
+| `AUTO_VIDEO_SWEEP_UP` | Pixels to sweep up from the video's bottom edge to reveal controls |
+| `NAV_STUCK_LIMIT` | Navigation clicks with no visible effect before escalating to recovery |
 | `VIDEO_SPEED_MULTIPLIER` | Expected speed after setting 1.5× (used to compute wait time) |
 | `TYPING_DELAY_MIN/MAX` | Per-keystroke delay range (seconds) |
 | `MOUSE_MOVE_DURATION_MIN/MAX` | Mouse glide time range (seconds) |

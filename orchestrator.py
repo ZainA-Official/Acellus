@@ -210,46 +210,97 @@ def run_auto(
     def _handle_video() -> None:
         _log("[auto] Video detected.")
         if dry_run:
-            _log("[dry-run] would reveal controls, try gear→speed→1.5x (vision), "
-                 "verify not paused, else wait it out at 1x.")
+            _log("[dry-run] would reveal controls, try gear→speed→1.5x "
+                 "(vision + calibrated fallback), verify not paused, else wait "
+                 "it out at 1x.")
             return
 
         left, top, w, h = auto_region
-        cx = left + w // 2
-        y_bottom = top + int(h * 0.92)
-        y_up = top + int(h * 0.72)
 
-        def _reveal() -> None:
+        # Anchor the reveal sweep on the calibrated video position when it falls
+        # inside the captured monitor; otherwise fall back to region geometry.
+        if left <= config.VIDEO_HOVER_X <= left + w and top < config.VIDEO_HOVER_Y <= top + h:
+            cx = config.VIDEO_HOVER_X
+            y_bottom = config.VIDEO_HOVER_Y
+        else:
+            cx = left + w // 2
+            y_bottom = top + int(h * 0.92)
+        y_up = max(top + 1, y_bottom - config.AUTO_VIDEO_SWEEP_UP)
+        y_ctrl = max(top + 1, y_bottom - 40)  # where the control bar sits
+
+        def _in_region(pt) -> bool:
+            return (pt is not None
+                    and left <= pt[0] <= left + w
+                    and top <= pt[1] <= top + h)
+
+        def _reveal(reps: int = 3) -> None:
+            """Summon the auto-hiding control bar: sweep up from the bottom edge,
+            then wiggle over the bar to keep it on screen."""
             input_controller.sweep(cx, y_bottom, cx, y_up,
                                    duration=config.AUTO_VIDEO_REVEAL_DURATION,
                                    label="reveal video controls")
-            input_controller.wiggle(cx, y_up, amplitude=20, reps=3,
+            input_controller.wiggle(cx, y_ctrl, amplitude=20, reps=reps,
                                     label="keep controls alive")
 
-        def _locate_and_click(what: str) -> bool:
-            if _stopped():
-                return False
-            f = _capture()
-            box = _call_gemini_interruptible(
-                gemini_vision.locate, f.png_bytes, what, f.mime_type,
-                stopped_fn=_stopped)
-            if box is None or _stopped():
-                return False
-            pt = f.box_center_to_screen(box)
-            if pt is None:
-                return False
-            input_controller.click(pt[0], pt[1], what)
-            _sleep(config.AUTO_VIDEO_STEP_DELAY)
-            return True
+        def _click_step(what: str, fallback_xy, resummon: bool) -> bool:
+            """Locate `what` by vision and click it; retry, then fall back to the
+            calibrated fixed coordinate.
 
-        # Try vision-guided 1.5x.
+            `resummon`=True re-summons the control bar before the capture and
+            again right before the click — needed for the gear icon, whose bar
+            auto-hides during the (multi-second) Gemini call. For steps that act
+            on an already-open menu (speed option, 1.5x), resummon=False leaves
+            the menu untouched instead of sweeping the mouse away and closing it.
+            Returns True once a click has been issued.
+            """
+            for attempt in range(config.AUTO_VIDEO_LOCATE_TRIES):
+                if _stopped():
+                    return False
+                if resummon:
+                    _reveal()
+                f = _capture()
+                box = _call_gemini_interruptible(
+                    gemini_vision.locate, f.png_bytes, what, f.mime_type,
+                    stopped_fn=_stopped)
+                if _stopped():
+                    return False
+                pt = f.box_center_to_screen(box) if box else None
+                if _in_region(pt):
+                    # The overlay auto-hides while Gemini was thinking; re-summon
+                    # so the bar is actually on screen at the instant we click.
+                    if resummon:
+                        input_controller.wiggle(cx, y_ctrl, amplitude=15, reps=2,
+                                                label="hold before click")
+                    input_controller.click(pt[0], pt[1], what)
+                    _sleep(config.AUTO_VIDEO_STEP_DELAY)
+                    return True
+                _log(f"[auto] «{what}» not located "
+                     f"(try {attempt + 1}/{config.AUTO_VIDEO_LOCATE_TRIES}).")
+
+            if config.AUTO_VIDEO_USE_FIXED_FALLBACK and _in_region(fallback_xy):
+                _log(f"[auto] Using calibrated fallback for «{what}» at {fallback_xy}.")
+                if resummon:
+                    _reveal(reps=2)
+                input_controller.click(fallback_xy[0], fallback_xy[1],
+                                       f"{what} (calibrated fallback)")
+                _sleep(config.AUTO_VIDEO_STEP_DELAY)
+                return True
+            return False
+
+        # Try vision-guided 1.5x, falling back to calibrated coordinates per step.
         _reveal()
         speed_set = (
-            _locate_and_click("the settings/gear/options icon in the video "
-                              "player control bar")
-            and _locate_and_click("the playback speed menu option in the open "
-                                  "settings menu")
-            and _locate_and_click("the 1.5x (or '1.5') playback speed option")
+            _click_step("the settings/gear/options icon in the video player "
+                        "control bar",
+                        (config.VIDEO_SETTINGS_X, config.VIDEO_SETTINGS_Y),
+                        resummon=True)
+            and _click_step("the playback speed menu option in the open settings "
+                            "menu",
+                            (config.VIDEO_SPEED_MENU_X, config.VIDEO_SPEED_MENU_Y),
+                            resummon=False)
+            and _click_step("the 1.5x (or '1.5') playback speed option",
+                            (config.VIDEO_SPEED_1_5X_X, config.VIDEO_SPEED_1_5X_Y),
+                            resummon=False)
         )
 
         if not speed_set:
@@ -290,36 +341,77 @@ def run_auto(
             _log(f"[auto] ~{secs:.0f}s left at 1x → waiting {wait:.0f}s.")
         _sleep(wait)
 
+    def _execute_action(frame, action) -> bool:
+        """
+        Carry out one recovery Action chosen by the goal-directed reasoner.
+        Returns True if it actually did something (so the caller knows progress
+        was attempted). Never raises.
+        """
+        if action is None or _stopped():
+            return False
+        a = action.action
+        why = action.reason or a
+
+        if a == "click":
+            pt = frame.box_center_to_screen(action.box) if action.box else None
+            if pt is not None:
+                _log(f"[auto] Recovery: click «{why}».")
+                if not dry_run:
+                    input_controller.click(pt[0], pt[1], "recovery")
+                return True
+            # Reasoner said click but gave no usable box — degrade to Escape.
+            _log(f"[auto] Recovery: click had no box ({why}); pressing Escape.")
+            if not dry_run:
+                input_controller.press_key("esc", "recovery")
+            return True
+
+        if a == "key":
+            k = (action.key or "esc").lower()
+            _log(f"[auto] Recovery: press {k} ({why}).")
+            if not dry_run:
+                input_controller.press_key(k, "recovery")
+            return True
+
+        if a in ("scroll_up", "scroll_down"):
+            amount = 300 if a == "scroll_up" else -300
+            _log(f"[auto] Recovery: {a} ({why}).")
+            if not dry_run:
+                input_controller.scroll(amount, "recovery")
+            return True
+
+        if a == "wait":
+            _log(f"[auto] Recovery: waiting ({why}).")
+            _sleep(config.AFTER_ADVANCE_DELAY)
+            return False
+
+        # "done" or anything unrecognized — the reasoner sees no blocker.
+        _log(f"[auto] Recovery: nothing to do ({why}).")
+        return False
+
     def _attempt_recovery(frame) -> None:
         """
-        Try to unstick an unrecognized or blocked screen: locate a close (X)
-        button, 'OK'/'Dismiss'/'Continue' button, or anything else that would
-        close a popup/notification/overlay, and click it. Falls back to
-        pressing Escape. Never raises — this exists purely so an overnight,
-        unattended run keeps going instead of idling forever or giving up.
+        Universal safety net for an unrecognized or blocked screen. Instead of
+        only hunting for a close button, ask Gemini — given the course goal and
+        this screenshot — for the single best next action to get unstuck (dismiss
+        a popup, re-enter the course, resume a paused video, press Escape, scroll,
+        or wait) and carry it out. Never raises — this exists purely so an
+        unattended run keeps making progress instead of idling forever.
         """
         if _stopped():
             return
-        box = None
+        action = None
         try:
-            box = _call_gemini_interruptible(
-                gemini_vision.locate, frame.png_bytes,
-                "a close (X) button, an 'OK'/'Got it'/'Dismiss'/'Continue' "
-                "button, or any other element that would close a popup, "
-                "notification, or overlay currently blocking the lesson content",
+            action = _call_gemini_interruptible(
+                gemini_vision.decide_action, frame.png_bytes, config.COURSE_GOAL,
                 frame.mime_type, stopped_fn=_stopped)
         except Exception as exc:
-            _log(f"[auto] Recovery lookup failed ({exc!r}); falling back to Escape.")
-        if box is not None and not _stopped():
-            pt = frame.box_center_to_screen(box)
-            if pt is not None:
-                _log("[auto] Recovery: closing detected popup/overlay.")
-                if not dry_run:
-                    input_controller.click(pt[0], pt[1], "dismiss popup (recovery)")
-                return
-        _log("[auto] Recovery: nothing found to click — pressing Escape.")
-        if not dry_run:
-            input_controller.press_key("esc", "recovery")
+            _log(f"[auto] Recovery decision failed ({exc!r}); pressing Escape.")
+            if not dry_run:
+                input_controller.press_key("esc", "recovery")
+            return
+        if action is None or _stopped():
+            return
+        _execute_action(frame, action)
 
     # ── startup ───────────────────────────────────────────────────────────────
 
@@ -340,6 +432,7 @@ def run_auto(
     last_question = ""
     last_answer = ""
     stuck_count = 0
+    nav_stuck = 0            # consecutive navigation clicks with no visible effect
     last_auto_thumb = None   # for screen-change dedup (avoid API on unchanged frames)
     acted = True             # True on first iteration and after every action
     cached_fill_in_box: list[float] | None = None  # stable input-bar box across questions
@@ -393,8 +486,26 @@ def run_auto(
                         _log(f"[auto] Navigation screen — clicking to continue at {pt}.")
                         input_controller.click(pt[0], pt[1], "navigation")
                         _sleep(config.AUTO_SETTLE_DELAY * 2)
+                        # Verify the click actually took us somewhere. A missed
+                        # click on a popup would otherwise re-fire on the same
+                        # dead spot forever; escalate to active recovery instead.
+                        after = _thumb(_capture().png_bytes)
+                        if _frame_diff(thumb, after) < config.ASSIST_CHANGE_THRESHOLD:
+                            nav_stuck += 1
+                            _log(f"[auto] Navigation click had no visible effect "
+                                 f"(stuck x{nav_stuck}/{config.NAV_STUCK_LIMIT}).")
+                            if nav_stuck >= config.NAV_STUCK_LIMIT:
+                                _log("[auto] Navigation stuck — recovery + Escape.")
+                                _attempt_recovery(frame)
+                                input_controller.press_key("esc", "nav unstick")
+                                nav_stuck = 0
+                                _sleep(config.AUTO_SETTLE_DELAY)
+                        else:
+                            nav_stuck = 0
                     else:
-                        _log("[auto] Navigation screen but no target found — waiting.")
+                        _log("[auto] Navigation screen but no target found — "
+                             "attempting recovery.")
+                        _attempt_recovery(frame)
                         _sleep(config.AFTER_ADVANCE_DELAY)
                     idle_frames = 0
                     acted = True

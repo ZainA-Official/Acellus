@@ -128,8 +128,45 @@ AUTO_VERIFY_THRESHOLD = 4.0    # mean per-pixel diff that counts as "text appear
 
 # Video flow timing (vision-guided 1.5x with fallback to waiting at 1x).
 AUTO_VIDEO_REVEAL_DURATION = 0.8   # upward sweep duration to reveal controls
-AUTO_VIDEO_STEP_DELAY = 0.5        # wait between gear -> speed -> 1.5x clicks
+AUTO_VIDEO_STEP_DELAY = 0.6        # wait between gear -> speed -> 1.5x clicks
 AUTO_VIDEO_BUFFER = 4.0            # extra seconds added to the wait
+
+# The control bar is summoned by sweeping the mouse UP from the bottom edge of
+# the video. Sweep this many pixels up from VIDEO_HOVER_Y (into the video body).
+AUTO_VIDEO_SWEEP_UP = 200
+
+# Each gear/speed/1.5x element is located by vision; retry the locate this many
+# times (the control bar can flicker or Gemini can miss a tiny icon) before
+# giving up on that step.
+AUTO_VIDEO_LOCATE_TRIES = 2
+
+# When vision can't find a video control after all retries, fall back to the
+# calibrated fixed coordinate (VIDEO_SETTINGS_*, VIDEO_SPEED_MENU_*,
+# VIDEO_SPEED_1_5X_*) captured by the setup wizard. The control bar renders at a
+# FIXED position, so these are reliable — often more so than locating a tiny gear
+# icon by vision. Set False to stay purely vision-driven.
+AUTO_VIDEO_USE_FIXED_FALLBACK = True
+
+# A navigation screen (popup/overlay/course-select) that doesn't visibly change
+# after this many consecutive click attempts triggers escalation (active
+# recovery + Escape) instead of clicking the same dead spot forever.
+NAV_STUCK_LIMIT = 4
+
+# ─────────────────────────────────────────────
+# GOAL-DIRECTED RECOVERY
+# ─────────────────────────────────────────────
+# When the cheap fast path is stuck or sees an unexpected screen, auto mode asks
+# Gemini — given this goal and the screenshot — for the SINGLE best next action to
+# get unstuck (close a popup, re-enter the course, resume a paused video, press
+# Escape, scroll, or wait). This is the universal safety net so you never have to
+# babysit UI navigation. It runs ONLY on the slow path, so it stays token-cheap.
+# Edit this text to point the bot at a different course.
+COURSE_GOAL = (
+    "Work through and complete the Precalculus course in the Acellus app. Keep "
+    "answering questions, advancing through lessons and videos, and dismissing "
+    "anything (popups, notifications, goal overlays, menus) that blocks progress. "
+    "If a video is paused, resume it."
+)
 
 # ─────────────────────────────────────────────
 # ASSIST MODE (you click, the bot solves)
